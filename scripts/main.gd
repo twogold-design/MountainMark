@@ -34,6 +34,10 @@ var save_data: Dictionary = {}
 var visited: Dictionary = {}
 var chapter: int = 0
 var _camera_ready: bool = false
+var camera_yaw: float = 0.0
+var camera_pitch: float = 0.0
+var camera_reading: bool = false
+var camera_orbiting: bool = false
 var _auto_test: bool = false
 var _auto_timer: float = 0.0
 var _qa_idle: float = 0.0
@@ -167,6 +171,7 @@ func _process(delta: float) -> void:
 		var lean: float = float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A))
 		if _auto_test and grip_active:
 			lean = clampf((balance_target - balance) * 8.0, -1.0, 1.0)
+		_update_read_line_camera(delta)
 		_tick_control(delta, lean)
 		_update_reachable()
 		_update_hover()
@@ -202,6 +207,10 @@ func _update_camera(delta: float) -> void:
 		target = body.lerp(summit + Vector3(0.0, 1.0, 0.0), progress * 0.7)
 		desired = body + Vector3(lerpf(1.0, 12.0, progress), lerpf(1.5, 6.0, progress), lerpf(9.0, 20.0, progress))
 	else:
+		var view_angle: float = camera_yaw if mode == "playing" else 0.0
+		var view_basis: Basis = Basis(Vector3.UP, view_angle) * Basis(Vector3.RIGHT, camera_pitch if mode == "playing" else 0.0)
+		target = body + view_basis * Vector3(1.45, 1.0, -0.4)
+		desired = body + view_basis * Vector3(6.0, 1.5, 10.0)
 		if current_rest and not grip_active:
 			desired += Vector3(0.6, 0.7, 1.3)
 		desired += Vector3(sin(clock_time * 0.75) * 0.022, sin(clock_time * 1.15) * 0.025, 0.0)
@@ -212,6 +221,18 @@ func _update_camera(delta: float) -> void:
 		camera.position = camera.position.lerp(desired, 1.0 - exp(-delta * 3.5))
 	if camera.position.distance_to(target) > 0.1:
 		camera.look_at(target, Vector3.UP)
+
+func _update_read_line_camera(delta: float) -> void:
+	if mode != "playing" or grip_active or climber.moving:
+		camera_orbiting = false
+		camera_reading = false
+		return
+	var orbit_axis: float = float(Input.is_physical_key_pressed(KEY_X)) - float(Input.is_physical_key_pressed(KEY_Z))
+	if absf(orbit_axis) > 0.01:
+		camera_yaw = clampf(camera_yaw + orbit_axis * delta * 0.90, -0.68, 0.68)
+		camera_reading = true
+	else:
+		camera_reading = camera_orbiting or absf(camera_yaw) > 0.015 or absf(camera_pitch) > 0.015
 
 func start_climb(resume: bool = false) -> void:
 	if resume:
@@ -241,6 +262,10 @@ func start_climb(resume: bool = false) -> void:
 	postcard_path = ""
 	run_collections.clear()
 	earned_badges.clear()
+	camera_yaw = 0.0
+	camera_pitch = 0.0
+	camera_reading = false
+	camera_orbiting = false
 	visited.clear()
 	if resume:
 		# Old versions have a different hold layout: safely resume at base.
@@ -264,7 +289,7 @@ func start_climb(resume: bool = false) -> void:
 	_camera_ready = false
 	_update_reachable()
 	hud.refresh_buttons()
-	show_toast(str(active_route.name), challenge_goal_text() if play_style == "challenge" else "金色可休息 · 青色绕行有岩台 · 橙色捷径需连续发力。", 7.0)
+	show_toast(str(active_route.name), challenge_goal_text() if play_style == "challenge" else "W 标记目标 · 中键拖拽 / Z X 读线 · A/D 稳住重心。金色可休息 · 青色绕行有岩台 · 橙色捷径需连续发力。", 7.0)
 	if resume and int(save_data.get("version", 0)) < 3:
 		show_toast("旧旅程已保留，山路已更新", "旧版锚点布局已变化，本次从营地出发；原登顶成绩仍在。", 8.0)
 
@@ -336,13 +361,23 @@ func _unhandled_input(event: InputEvent) -> void:
 				select_support(0)
 			KEY_E:
 				select_support(1)
+	if event is InputEventMouseMotion and camera_orbiting:
+		camera_yaw = clampf(camera_yaw - event.relative.x * 0.0045, -0.68, 0.68)
+		camera_pitch = clampf(camera_pitch + event.relative.y * 0.0035, -0.28, 0.22)
+		camera_reading = true
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_MIDDLE:
+		camera_orbiting = event.pressed and mode == "playing" and not grip_active and not climber.moving
+		if camera_orbiting:
+			camera_reading = true
+		return
 	if event is InputEventMouseButton and mode == "playing":
 		if event.button_index != MOUSE_BUTTON_LEFT and event.button_index != MOUSE_BUTTON_RIGHT:
 			return
 		var hand: int = 0 if event.button_index == MOUSE_BUTTON_LEFT else 1
 		if not event.pressed:
 			_release_grip(hand)
-		elif not grip_active and not climber.moving:
+		elif not grip_active and not climber.moving and not camera_orbiting:
 			_update_hover()
 			if hovered_id >= 0:
 				attempt_hold(hovered_id, hand)
@@ -371,11 +406,28 @@ func choose_next() -> void:
 	if mode != "playing" or climber.moving or grip_active:
 		return
 	preview_id = next_hold_id()
-	show_toast("观察，不等于迈步", "已标记较近的上行岩点。需要亲自按住鼠标，配合 A/D 和松手时机。", 3.0)
+	show_toast("观察，不等于迈步", "已标记上行岩点。中键拖拽或 Z / X 调整读线视角；按住鼠标后再用 A / D 稳住重心。", 3.0)
+
+func balance_hint_for_hold(id: int) -> String:
+	if id < 0:
+		return ""
+	var hold: Dictionary = _hold(id)
+	var origin: Vector3 = climber.get_reach_origin()
+	var span: Vector3 = Vector3(hold.position) - origin
+	var hand: int = 0 if span.x <= 0.0 else 1
+	var hand_name: String = "左手" if hand == 0 else "右手"
+	var screen_delta: float = span.x
+	if camera != null and is_instance_valid(camera):
+		var body_screen: Vector2 = camera.unproject_position(origin + Vector3(0.0, 0.12, 0.0))
+		var hold_screen: Vector2 = camera.unproject_position(Vector3(hold.position))
+		screen_delta = hold_screen.x - body_screen.x
+	var balance_name: String = "重心偏左" if screen_delta < -18.0 else ("重心偏右" if screen_delta > 18.0 else "重心居中")
+	return "%s · %s" % [hand_name, balance_name]
 
 func attempt_hold(id: int, hand: int = 0) -> void:
 	if mode != "playing" or climber.moving or grip_active or _slip_cooldown > 0.0 or id not in reachable:
 		return
+	camera_orbiting = false
 	grip_id = id
 	grip_hand = clampi(hand, 0, 1)
 	grip_time = 0.0

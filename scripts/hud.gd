@@ -208,6 +208,15 @@ func _draw_game(w: float, h: float) -> void:
 		_draw_route_sketch(w)
 	# Projected reachable points remain visible against complex rock geometry.
 	if game.mode == "playing":
+		if game.preview_id >= 0 and game.camera_reading:
+			var preview_hold: Dictionary = game._hold(game.preview_id)
+			var preview_pos: Vector3 = preview_hold.position
+			if not game.camera.is_position_behind(preview_pos):
+				var body_screen: Vector2 = game.camera.unproject_position(game.climber.get_body_position() + Vector3(0.0, 0.12, 0.0))
+				var hold_screen: Vector2 = game.camera.unproject_position(preview_pos)
+				draw_line(body_screen, hold_screen, Color(MINT, 0.58), 2.0, true)
+				draw_circle(body_screen, 4.0, Color(MINT, 0.80))
+				_text("重心向左" if hold_screen.x < body_screen.x - 18.0 else ("重心向右" if hold_screen.x > body_screen.x + 18.0 else "重心居中"), body_screen.x + 12.0, body_screen.y - 10.0, 12, MINT)
 		for id: int in game.reachable:
 			var hold: Dictionary = game._hold(id)
 			var pos: Vector3 = hold.position
@@ -228,6 +237,7 @@ func _draw_game(w: float, h: float) -> void:
 			draw_circle(p, 3, color)
 			if preview and not hover and not selected:
 				_text("观察目标", p.x + 23, p.y - 16, 13, MINT)
+				_text(game.balance_hint_for_hold(id), p.x + 23, p.y + 22, 13, MINT)
 			var label_y: float = p.y + 6
 			if branch in ["safe", "shortcut"]:
 				_text("绕行" if branch == "safe" else "捷径", p.x + 23, label_y, 13, branch_color)
@@ -268,7 +278,7 @@ func _draw_game(w: float, h: float) -> void:
 	_text(status, 56, h - 79, 13, color)
 	_panel(Rect2(360, h - 119, w - 396, 83), 0.74)
 	_text("按住鼠标准备 → A / D 调重心 → 双区就绪后松开", 375, h - 81, 15, PAPER)
-	_text("W 观察  ·  Q / E 选脚  ·  空格 镁粉  ·  R 返回  ·  Esc 暂停  ·  M 声音  ·  F11 全屏", 375, h - 52, 13, MUTED)
+	_text("W 观察  ·  中键拖拽 / Z X 读线  ·  Q / E 选脚  ·  空格 镁粉  ·  R 返回  ·  Esc 暂停  ·  M 声音  ·  F11 全屏", 375, h - 52, 13, MUTED)
 	if game.play_style != "journey":
 		_text(game.time_string(game.elapsed), w - 128, 168, 21, PAPER)
 	_panel(Rect2(36, 153, 310, 162), 0.70)
@@ -289,11 +299,13 @@ func _draw_game(w: float, h: float) -> void:
 		_draw_grip_controls(w, h)
 	elif game.mode == "playing" and not game.climber.moving:
 		_panel(Rect2(370, h - 197, w - 406, 58), 0.56)
-		var hint: String = "按住带光圈的岩点，观察蓄力与重心两个绿区。"
+		var hint: String = "先按 W 标记目标；中键拖拽或 Z / X 读线，再按住带光圈的岩点。"
 		if game.current_rest:
 			hint = "在金色岩点休息。选好路线，再按住鼠标准备下一步。"
 		if game.slip_streak > 0:
 			hint = "连续失手 %d / 3 · 稳住重心再松手，第三次将触发安全绳。" % game.slip_streak
+		if game.preview_id >= 0 and game.camera_reading:
+			hint = "读线视角：%s · 中键拖拽或 Z / X 调整镜头，确认落点与身体的横向关系。" % game.balance_hint_for_hold(game.preview_id)
 		_text(hint, 389, h - 162, 14, GOLD if game.slip_streak > 0 else MUTED)
 	_draw_toast(w)
 
@@ -463,7 +475,7 @@ func _draw_help(w: float, h: float) -> void:
 	_text("攀登手册  /  FIELD NOTES", left, 186, 15, GOLD)
 	_rule(left, 215, 780)
 	var rows: Array = [
-		["01", "观察路线", "W 标出建议点。带光圈的岩点可抓握，远点更费力。"],
+		["01", "观察路线", "W 标出建议点；中键拖拽或 Z / X 调整读线视角，先看落点与重心关系。"],
 		["02", "先落脚，再伸手", "鼠标左 / 右键选择双手；Q / E 选左 / 右支撑脚，帮助横渡。"],
 		["03", "双区就绪再松手", "按住 A / D 把重心移入绿区；蓄力白针进入绿区时松开鼠标。"],
 		["04", "把握 4.5 秒", "超时或未对准会失手并扣握力；连续三次失手由安全绳保护。"],
