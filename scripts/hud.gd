@@ -8,6 +8,22 @@ const MINT: Color = Color("a9ddc4")
 var game: Node3D
 var font: Font = preload("res://assets/fonts/ui.ttc")
 var buttons: Array[Button] = []
+var journal_page: int = 0
+var _summit_buttons_visible: bool = false
+const ROUTE_LABELS: Array[String] = ["松风岩脊", "回声峡谷", "云上孤峰"]
+const ROUTE_MOODS: Array[String] = ["松林 · 日出 · 风蚀石阶", "瀑布 · 峡谷 · 湿壁横渡", "云海 · 阵风 · 暴露山脊"]
+const ROUTE_NOTES: Array[String] = ["沿松林岩脊向上，选择绕行或直攀。", "把重心交给支撑脚，穿过峡谷水雾。", "听风停下的瞬间，越过最后一道山脊。"]
+const STYLE_NAMES: Array[String] = ["登山旅程", "岩段挑战", "极限登顶"]
+const STYLE_KEYS: Array[String] = ["journey", "challenge", "extreme"]
+const CHALLENGE_NAMES: Array[String] = ["稳稳向上", "横渡练习", "湿壁考验"]
+
+func _process(_delta: float) -> void:
+	if game == null:
+		return
+	var should_show: bool = game.mode == "summit" and game.summit_time >= 4.0
+	if should_show != _summit_buttons_visible:
+		_summit_buttons_visible = should_show
+		refresh_buttons()
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -19,6 +35,47 @@ func _text(content: String, x: float, y: float, px: int = 20, color: Color = PAP
 	draw_string(font, Vector2(x + 1, y + 1), content, HORIZONTAL_ALIGNMENT_LEFT, -1, px, Color(0.025, 0.06, 0.07, color.a * 0.4))
 	draw_string(font, Vector2(x, y), content, HORIZONTAL_ALIGNMENT_LEFT, -1, px, color)
 
+func _wrap_lines(content: String, width: float, px: int) -> Array[String]:
+	var lines: Array[String] = []
+	var line: String = ""
+	for i: int in range(content.length()):
+		var ch: String = content.substr(i, 1)
+		if ch == "\n":
+			lines.append(line)
+			line = ""
+			continue
+		if not line.is_empty() and ch not in "，。、；：？！）】》,.!?;:" and font.get_string_size(line + ch, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x > width:
+			lines.append(line)
+			line = ch
+		else:
+			line += ch
+	lines.append(line)
+	return lines
+
+func _wrapped(content: String, x: float, y: float, width: float, px: int = 16, line_height: float = 23.0, color: Color = PAPER) -> void:
+	var lines: Array[String] = _wrap_lines(content, width, px)
+	for i: int in range(lines.size()):
+		_text(lines[i], x, y + i * line_height, px, color)
+
+func _center_wrapped(content: String, x: float, y: float, width: float, px: int, line_height: float, color: Color = PAPER) -> void:
+	var lines: Array[String] = _wrap_lines(content, width, px)
+	for i: int in range(lines.size()):
+		_center(lines[i], x, y + i * line_height, px, color)
+
+func _draw_toast(w: float) -> void:
+	if game.toast_time <= 0.0:
+		return
+	var fade: float = minf(1.0, game.toast_time)
+	var width: float = 530.0
+	_panel(Rect2((w - width) * 0.5, 34, width, 96), 0.85 * fade)
+	_center(game.toast, w * 0.5, 69, 22, Color(PAPER, fade))
+	_center_wrapped(game.toast_sub, w * 0.5, 98, width - 36, 14, 20, Color(MUTED, fade))
+
+func _journal_rows(width: float) -> Array[String]:
+	var rows: Array[String] = []
+	for line: String in game.journal_lines():
+		rows.append_array(_wrap_lines(line, width, 17))
+	return rows
 func _center(content: String, x: float, y: float, px: int = 20, color: Color = PAPER) -> void:
 	_text(content, x - font.get_string_size(content, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x * 0.5, y, px, color)
 
@@ -52,6 +109,9 @@ func _draw() -> void:
 		draw_rect(Rect2(0, h - 15 - i * 10, w, 15 + i * 10), Color(0.02, 0.05, 0.06, alpha))
 	if game.mode == "menu":
 		_draw_menu(w, h)
+		_draw_toast(w)
+	elif game.mode == "journal":
+		_draw_journal(w, h)
 	elif game.mode == "summit":
 		_draw_summit(w, h)
 	else:
@@ -64,58 +124,88 @@ func _draw() -> void:
 		_draw_help(w, h)
 
 func _draw_menu(w: float, h: float) -> void:
-	draw_polygon(PackedVector2Array([Vector2.ZERO, Vector2(w * 0.80, 0), Vector2(w * 0.80, h), Vector2(0, h)]), PackedColorArray([Color(0.025,0.065,0.08,0.97), Color(0.025,0.065,0.08,0.0), Color(0.025,0.065,0.08,0.0), Color(0.025,0.065,0.08,0.97)]))
+	draw_rect(Rect2(0, 0, w, h), Color(0.025, 0.065, 0.08, 0.70))
+	_mountain(Vector2(64, 57), 0.55, PAPER)
+	_text("M O U N T A I N   M A R K", 122, 69, 14)
+	_text("山 痕", 60, 160, 70)
+	_text("每一座山，都有自己的抵达方式。", 286, 149, 22, MUTED)
+	_text("远 行 更 新  /  0.3.1", w - 246, 69, 14, GOLD)
+	_text("01  选择你的下一座山", 64, 204, 16, GOLD)
+	var card_w: float = (w - 160.0) / 3.0
+	for i: int in range(3):
+		var x: float = 64.0 + i * (card_w + 16.0)
+		var selected: bool = game.route_index == i
+		var unlocked: bool = game.route_unlocked(i)
+		_panel(Rect2(x, 224, card_w, 221), 0.91 if selected else 0.66)
+		if selected:
+			draw_rect(Rect2(x, 224, card_w, 3), GOLD)
+		_text("0%d" % (i + 1), x + 20, 256, 14, GOLD if selected else MUTED)
+		_mountain(Vector2(x + card_w - 112, 269), 0.83, MINT if i == 0 else (MUTED if i == 1 else PAPER))
+		_text(ROUTE_LABELS[i], x + 20, 301, 29, PAPER if unlocked else MUTED)
+		_text(ROUTE_MOODS[i], x + 20, 333, 15, GOLD if selected else MUTED)
+		_text(ROUTE_NOTES[i], x + 20, 362, 13, MUTED)
+	_text("02  选择攀登方式", 64, 483, 16, GOLD)
+	var desc: String = "自由观察、锚点续攀。沿途探索分岔，留下第一次登顶的记录。"
+	if game.play_style == "challenge":
+		desc = "短距离专项练习。每一段都有具体目标，跌落后可就近重试。"
+	elif game.play_style == "extreme":
+		desc = "更少的保护与补给，完整攀登并刷新个人纪录。每一次出手都更重要。"
+	_text(desc, 64, 582, 16, MUTED)
+	if game.play_style == "challenge":
+		_text(game.challenge_goal_text(), 64, 684, 16, MINT)
+	else:
+		var info: Dictionary = game.route_info()
+		_text(str(info.get("subtitle", "")), 64, 628, 23)
+		_text("选择支撑脚 · 观察岩面 · 把握出手时机", 64, 662, 15, MUTED)
+	_rule(64, h - 183, w - 128)
+	_text("戴上耳机，听见山的呼吸。", 64, h - 42, 14, MUTED)
+	_text("所有旅程与纪念都保存在本机", w - 315, h - 42, 14, MUTED)
 
-	_mountain(Vector2(70, 66), 0.55, PAPER)
-	_text("M O U N T A I N   M A R K", 127, 77, 14)
-	_text("一 段 只 属 于 你 的 向 上 旅 程", 70, h * 0.255, 17, MUTED)
-	_text("山 痕", 63, h * 0.255 + 125, 110)
-	_text("风很大。山很静。", 72, h * 0.255 + 183, 27)
-	_text("把目光放在下一处岩点，把世界留在身后。", 72, h * 0.255 + 224, 18, MUTED)
-	_rule(72, h * 0.255 + 259, 340)
-	_text("01  /  风 脊", 74, h * 0.255 + 294, 16, GOLD)
-	_text("72 米垂直岩壁   ·   4 段攀登   ·   单人旅程", 74, h * 0.255 + 326, 16, MUTED)
-	_text("攀 登 更 新  0.2.1", 72, h - 44, 13, MUTED)
-	_text("戴上耳机，听见山的呼吸。", w - 310, h - 44, 15, PAPER)
-	_panel(Rect2(w - 272, 56, 208, 94), 0.4)
-	_text("风 脊  /  WIND RIDGE", w - 249, 89, 13, GOLD)
-	_text("海拔 2,816 m", w - 249, 126, 22)
-	# The quiet expedition trace at the far right hints at the route.
-	var base_x: float = w - 91
-	draw_line(Vector2(base_x, h * 0.4), Vector2(base_x, h * 0.73), Color(0.94, 0.91, 0.81, 0.4), 1.0, true)
-	for i: int in range(5):
-		var y: float = h * 0.4 + i * h * 0.0825
-		draw_circle(Vector2(base_x, y), 3.0 if i > 0 else 5.0, GOLD if i == 0 else PAPER)
-	_text("峰", base_x - 8, h * 0.4 - 23, 16)
-	_text("起", base_x - 8, h * 0.73 + 32, 16, MUTED)
-	if int(game.save_data.get("summits", 0)) > 0:
-		_text("已登顶 %d 次  ·  最佳 %s" % [int(game.save_data.summits), game.time_string(float(game.save_data.best_time))], 73, h - 87, 14, GOLD)
-
+func _draw_journal(w: float, h: float) -> void:
+	draw_rect(Rect2(0, 0, w, h), Color(0.025, 0.065, 0.08, 0.91))
+	_panel(Rect2(64, 54, w - 128, h - 108), 0.82)
+	_text("登 山 日 志", 96, 128, 38)
+	_text("走过的路，会留下痕迹。", 98, 168, 17, MUTED)
+	_rule(96, 194, w - 192)
+	var lines: Array[String] = _journal_rows(w - 196)
+	var per_page: int = maxi(1, int((h - 360) / 33))
+	var pages: int = maxi(1, ceili(float(lines.size()) / per_page))
+	journal_page = clampi(journal_page, 0, pages - 1)
+	if lines.is_empty():
+		_text("第一座山，正在等你出发。", 98, 254, 22, MUTED)
+	for i: int in range(per_page):
+		var line_index: int = journal_page * per_page + i
+		if line_index >= lines.size():
+			break
+		_text(lines[line_index], 98, 240 + i * 33, 17, GOLD if lines[line_index].begins_with("【") else PAPER)
+	_text("%d / %d" % [journal_page + 1, pages], 98, h - 105, 16, MUTED)
 func _draw_game(w: float, h: float) -> void:
 	# Top-left expedition card.
 	_panel(Rect2(36, 32, 310, 107), 0.68)
 	_mountain(Vector2(55, 58), 0.38, PAPER)
-	_text("山 痕  /  WIND RIDGE", 98, 67, 13, MUTED)
-	_text(game.CHAPTERS[mini(game.chapter, 4)], 55, 111, 22)
+	_text("山 痕  /  " + str(game.active_route.get("name", ROUTE_LABELS[game.route_index])), 98, 67, 13, MUTED)
+	_text(game.CHAPTERS[mini(game.chapter, 4)], 55, 111, 20)
 	var climbed: float = maxf(0.0, float(game.climber.get_reach_origin().y) - 1.0)
 	_panel(Rect2(w - 230, 32, 194, 107), 0.68)
 	_text("垂直高度", w - 211, 62, 13, MUTED)
 	_text("%04.1f" % climbed, w - 213, 108, 38)
-	_text("/ 72 m", w - 104, 106, 15, MUTED)
+	_text("/ %s m" % str(game.route_height), w - 112, 106, 15, MUTED)
 	# A tiny vertical route diagram.
 	var rx: float = w - 59
 	var top: float = h * 0.28
 	var bottom: float = h * 0.72
 	draw_line(Vector2(rx, top), Vector2(rx, bottom), Color(0.9, 0.9, 0.8, 0.26), 2.0, true)
-	var prog: float = clampf(climbed / 71.0, 0.0, 1.0)
+	var prog: float = clampf(climbed / maxf(1.0, game.route_height), 0.0, 1.0)
 	draw_line(Vector2(rx, bottom), Vector2(rx, lerpf(bottom, top, prog)), GOLD, 2.0, true)
 	for i: int in range(5):
 		var y: float = lerpf(bottom, top, float(i) / 4.0)
-		draw_circle(Vector2(rx, y), 3.0, GOLD if climbed >= float(i) * 18.0 else MUTED)
+		draw_circle(Vector2(rx, y), 3.0, GOLD if climbed >= float(i) * game.route_height / 4.0 else MUTED)
 		draw_arc(Vector2(rx, y), 7.0, 0, TAU, 20, Color(0.9, 0.9, 0.8, 0.25), 1.0, true)
 	draw_circle(Vector2(rx, lerpf(bottom, top, prog)), 5.0, PAPER)
 	_text("顶", rx - 8, top - 22, 14, PAPER)
 	_text("%02d%%" % int(prog * 100), rx - 20, bottom + 33, 13, MUTED)
+	if game.current_rest and game.reachable.size() > 1 and game.play_style != "challenge":
+		_draw_route_sketch(w)
 	# Projected reachable points remain visible against complex rock geometry.
 	if game.mode == "playing":
 		for id: int in game.reachable:
@@ -129,15 +219,26 @@ func _draw_game(w: float, h: float) -> void:
 			var hover: bool = id == game.hovered_id
 			var selected: bool = game.grip_active and id == game.grip_id
 			var preview: bool = id == game.preview_id
-			var color: Color = MINT if selected or preview else (GOLD if bool(hold.rest) else PAPER)
+			var branch: String = str(hold.get("branch", "main"))
+			var branch_color: Color = MINT if branch == "safe" else (Color("f0a06a") if branch == "shortcut" else PAPER)
+			var color: Color = MINT if selected or preview else (GOLD if bool(hold.rest) else branch_color)
 			var rad: float = 24.0 if selected else (22.0 if hover else 15.0)
 			draw_circle(p, rad + 3, Color(0.025, 0.08, 0.08, 0.24))
 			draw_arc(p, rad, game.clock_time * 0.15, game.clock_time * 0.15 + TAU * 0.82, 42, color, 2.0 if hover else 1.3, true)
 			draw_circle(p, 3, color)
 			if preview and not hover and not selected:
 				_text("观察目标", p.x + 23, p.y - 16, 13, MINT)
+			var label_y: float = p.y + 6
+			if branch in ["safe", "shortcut"]:
+				_text("绕行" if branch == "safe" else "捷径", p.x + 23, label_y, 13, branch_color)
+				label_y += 21
 			if bool(hold.rest):
-				_text("休息" if not bool(hold.checkpoint) else "锚点", p.x + 23, p.y + 6, 13, GOLD)
+				_text("休息" if not bool(hold.checkpoint) else "锚点", p.x + 23, label_y, 13, GOLD)
+				label_y += 21
+			var collectible: String = str(hold.get("collectible", ""))
+			if not collectible.is_empty():
+				var collected: bool = game.save_data.get("collections", {}).has(collectible)
+				_text("足迹已记录" if collected else "◇ 山路记录", p.x + 23, label_y, 12, MUTED if collected else GOLD)
 			if hover:
 				var reach_distance: float = game.climber.get_reach_origin().distance_to(pos)
 				var effort: String = "稳妥" if reach_distance < 1.7 else ("需发力" if reach_distance < 2.4 else "远点 · 费力")
@@ -150,14 +251,14 @@ func _draw_game(w: float, h: float) -> void:
 	if stamina < 22:
 		color = Color("ee896e")
 	_text("握 力", 56, h - 138, 15, MUTED)
-	_text("镁粉 %d / 3" % game.chalk_charges, 135, h - 138, 13, GOLD if game.chalk_charges > 0 else MUTED)
+	_text("挑战禁用镁粉" if game.play_style == "challenge" and game.challenge_index == 1 else "镁粉 %d / %d" % [game.chalk_charges, game.chalk_capacity()], 135, h - 138, 13, GOLD if game.chalk_charges > 0 else MUTED)
 	_text("%03d" % int(stamina), 253, h - 134, 25, color)
 	for i: int in range(25):
 		var filled: bool = float(i) * 4.0 < stamina
 		draw_rect(Rect2(56 + i * 10.7, h - 116, 7.5, 13), color if filled else Color(0.8, 0.9, 0.85, 0.13))
 	var status: String = "稳住呼吸，寻找下一处岩点"
 	if game.grip_active:
-		status = "准备中 · 松开鼠标完成抓握"
+		status = "准备中 · 先确认支撑与双区"
 	elif game.climber.moving:
 		status = "伸手  ·  抓握  ·  蹬腿"
 	elif game.current_rest:
@@ -167,8 +268,23 @@ func _draw_game(w: float, h: float) -> void:
 	_text(status, 56, h - 79, 13, color)
 	_panel(Rect2(360, h - 119, w - 396, 83), 0.74)
 	_text("按住鼠标准备 → A / D 调重心 → 双区就绪后松开", 375, h - 81, 15, PAPER)
-	_text("W 观察   ·   空格 镁粉   ·   R 返回锚点   ·   Esc 暂停   ·   M 声音   ·   F11 全屏", 375, h - 52, 13, MUTED)
-	_text(game.time_string(game.elapsed), w - 128, h - 91, 21, PAPER)
+	_text("W 观察  ·  Q / E 选脚  ·  空格 镁粉  ·  R 返回  ·  Esc 暂停  ·  M 声音  ·  F11 全屏", 375, h - 52, 13, MUTED)
+	if game.play_style != "journey":
+		_text(game.time_string(game.elapsed), w - 128, 168, 21, PAPER)
+	_panel(Rect2(36, 153, 310, 162), 0.70)
+	var support: String = "自动落脚"
+	if game.selected_support >= 0:
+		support = "左脚支撑" if game.selected_support == 0 else "右脚支撑"
+	_text("Q / E  " + support, 55, 181, 15, MINT)
+	_text("岩面观察", 55, 208, 12, MUTED)
+	_wrapped(game.terrain_hint(), 55, 235, 271, 14, 21, PAPER)
+	var weather: String = "风力 %.0f%%" % (game.wind_strength * 100.0)
+	if game.chalk_protection > 0.0:
+		weather += "  ·  防滑 %.0f 秒" % game.chalk_protection
+	_text(weather, 55, 294, 13, GOLD)
+	if game.play_style == "challenge":
+		_panel(Rect2(36, 328, 310, 85), 0.75)
+		_wrapped(game.challenge_goal_text(), 55, 356, 270, 13, 21, GOLD)
 	if game.grip_active:
 		_draw_grip_controls(w, h)
 	elif game.mode == "playing" and not game.climber.moving:
@@ -179,13 +295,55 @@ func _draw_game(w: float, h: float) -> void:
 		if game.slip_streak > 0:
 			hint = "连续失手 %d / 3 · 稳住重心再松手，第三次将触发安全绳。" % game.slip_streak
 		_text(hint, 389, h - 162, 14, GOLD if game.slip_streak > 0 else MUTED)
-	if game.toast_time > 0.0:
-		var fade: float = minf(1.0, game.toast_time)
-		var width: float = 620.0
-		_panel(Rect2((w - width) * 0.5, 34, width, 89), 0.72 * fade)
-		_center(game.toast, w * 0.5, 69, 22, Color(PAPER, fade))
-		_center(game.toast_sub, w * 0.5, 101, 14, Color(MUTED, fade))
+	_draw_toast(w)
 
+func _branch_path(first: int) -> Array[Dictionary]:
+	var path: Array[Dictionary] = []
+	var next_id: int = first
+	var seen: Dictionary = {}
+	for _i: int in range(64):
+		if seen.has(next_id):
+			break
+		seen[next_id] = true
+		var point: Dictionary = game._hold(next_id)
+		path.append(point)
+		if str(point.get("branch", "main")) == "main":
+			break
+		var links: Array = point.get("links", [])
+		if links.is_empty():
+			break
+		next_id = int(links[0])
+	return path
+
+func _draw_route_sketch(w: float) -> void:
+	var hub: Dictionary = game._hold(game.climber.current_hold_id)
+	var links: Array = hub.get("links", [])
+	if links.size() < 2:
+		return
+	var left: float = w - 366
+	var top: float = 178
+	_panel(Rect2(left, top, 264, 235), 0.88)
+	_text("下一段 · 在这里选择", left + 16, top + 27, 14, PAPER)
+	var start: Vector2 = Vector2(left + 132, top + 156)
+	var finish: Vector2 = Vector2(left + 132, top + 54)
+	for first in links:
+		var path: Array[Dictionary] = _branch_path(int(first))
+		if path.is_empty():
+			continue
+		var safe: bool = str(path[0].get("branch", "")) == "safe"
+		var color: Color = MINT if safe else Color("f0a06a")
+		var previous: Vector2 = start
+		for i: int in range(path.size()):
+			var t: float = float(i + 1) / float(path.size())
+			var point: Vector2 = start.lerp(finish, t) + Vector2(sin(t * PI) * (-73 if safe else 73), 0)
+			draw_line(previous, point, Color(color, 0.75), 1.5, true)
+			draw_circle(point, 4.0 if bool(path[i].rest) else 2.4, GOLD if bool(path[i].rest) else color)
+			previous = point
+		_text("绕行" if safe else "捷径", left + (17 if safe else 216), top + 106, 12, color)
+		_text(("绕行 %d 步 · 中途可休息" if safe else "捷径 %d 步 · 需连续发力") % path.size(), left + 17, top + (190 if safe else 215), 12, color)
+	draw_circle(start, 5, PAPER)
+	draw_circle(finish, 5, GOLD)
+	_text("汇合", finish.x + 13, finish.y + 5, 12, GOLD)
 func _skill_bar(rect: Rect2, value: float, target: float, window: float, aligned: bool) -> void:
 	draw_rect(rect, Color(0.70, 0.83, 0.81, 0.12))
 	var band_left: float = clampf(target - window, 0.0, 1.0)
@@ -210,7 +368,14 @@ func _draw_grip_controls(w: float, h: float) -> void:
 	var remaining: float = maxf(0.0, 4.5 - game.grip_time)
 	_panel(Rect2(left, top, panel_width, 192), 0.93)
 	var hand: String = "左手" if game.grip_hand == 0 else "右手"
-	_text("双区就绪 · 现在松开" if ready else hand + " · 稳住，等待出手", left + 20, top + 28, 19, MINT if ready else PAPER)
+	var grip_hold: Dictionary = game._hold(game.grip_id)
+	var foot: int = int(grip_hold.get("support", -1))
+	var heading: String = "双区就绪 · 现在松开" if ready else hand + " · 稳住，等待出手"
+	if foot >= 0 and game.selected_support != foot:
+		heading = "先按 " + ("Q 选左脚支撑" if foot == 0 else "E 选右脚支撑")
+	elif str(grip_hold.get("kind", "")) == "wind" and game.wind_strength >= 0.72:
+		heading = "阵风正强 · 等待风弱"
+	_text(heading, left + 20, top + 28, 19, MINT if ready else PAPER)
 	_text("%.1f 秒" % remaining, left + panel_width - 82, top + 27, 15, Color("ee896e") if remaining < 1.0 else MUTED)
 	_rule(left + 20, top + 40, panel_width - 40, Color(MINT if ready else MUTED, 0.2))
 	_text("蓄力  /  等待白针进入绿区", left + 20, top + 62, 13, MUTED)
@@ -231,9 +396,11 @@ func _draw_fall(w: float, h: float) -> void:
 	_panel(Rect2(cx - 330, cy - 225, 660, 440), 0.97)
 	_center("安 全 绳 保 护", cx, cy - 169, 15, GOLD)
 	_center(game.fall_title, cx, cy - 102, 38)
-	_center(game.fall_reason, cx, cy - 56, 19, MUTED)
+	_center_wrapped(game.fall_reason, cx, cy - 65, 550, 18, 24, MUTED)
 	_rule(cx - 270, cy - 24, 540)
-	if game.checkpoint == 0:
+	if game.play_style == "challenge":
+		_center("这段练习将从本段起点重新开始。", cx, cy + 22, 18)
+	elif game.checkpoint == 0:
 		_center("尚未抵达安全锚点，将回到山脚营地。", cx, cy + 22, 18)
 	else:
 		var altitude: float = maxf(0.0, float(game._hold(game.checkpoint).position.y) - 1.0)
@@ -251,29 +418,44 @@ func _draw_pause(w: float, h: float) -> void:
 func _draw_summit(w: float, h: float) -> void:
 	draw_rect(Rect2(0, 0, w, 42), Color(0.02, 0.04, 0.05, 0.92))
 	draw_rect(Rect2(0, h - 42, w, 42), Color(0.02, 0.04, 0.05, 0.92))
-	var fade: float = clampf((game.summit_time - 0.8) / 2.0, 0.0, 1.0)
-	if fade <= 0.0:
+	if game.summit_time < 4.0:
+		_center("此刻，先听一听山顶的风。", w * 0.5, h - 67, 18, PAPER)
 		return
-	draw_polygon(PackedVector2Array([Vector2(0,42), Vector2(840,42), Vector2(840,h-42), Vector2(0,h-42)]), PackedColorArray([Color(0.025,0.065,0.075,fade * 0.94), Color(0.025,0.065,0.075,0), Color(0.025,0.065,0.075,0), Color(0.025,0.065,0.075,fade * 0.94)]))
+	var fade: float = clampf((game.summit_time - 4.0) / 1.2, 0.0, 1.0)
+	draw_polygon(PackedVector2Array([Vector2(0,42), Vector2(850,42), Vector2(850,h-42), Vector2(0,h-42)]), PackedColorArray([Color(0.025,0.065,0.075,fade * 0.97), Color(0.025,0.065,0.075,0), Color(0.025,0.065,0.075,0), Color(0.025,0.065,0.075,fade * 0.97)]))
 	_text("A S C E N T   C O M P L E T E", 72, 126, 16, Color(GOLD, fade))
-	_text("山在脚下。", 68, 224, 64, Color(PAPER, fade))
-	_text("而你，比出发时更高了一点。", 74, 270, 21, Color(PAPER, fade))
-	_rule(74, 312, 350, Color(GOLD, fade * 0.4))
-	_text("风脊峰    2,816 m", 74, 354, 26, Color(PAPER, fade))
-	_text("攀登用时", 74, 411, 14, Color(MUTED, fade))
-	_text(game.time_string(game.elapsed), 74, 454, 32, Color(PAPER, fade))
-	_text("落手次数", 230, 411, 14, Color(MUTED, fade))
-	_text(str(game.climber.total_moves), 230, 454, 32, Color(PAPER, fade))
-	_text("绳索保护", 360, 411, 14, Color(MUTED, fade))
-	_text(str(game.falls), 360, 454, 32, Color(PAPER, fade))
-	_panel(Rect2(74, 493, 380, 84), fade * 0.62)
-	var center: Vector2 = Vector2(112, 534)
-	var diamond: PackedVector2Array = PackedVector2Array([center + Vector2(0,-18), center + Vector2(17,0), center + Vector2(0,18), center + Vector2(-17,0), center + Vector2(0,-18)])
-	draw_polyline(diamond, Color(GOLD, fade), 2, true)
-	_text("成就解锁  ·  群山之上", 148, 527, 18, Color(GOLD, fade))
-	_text("一气呵成 · 全程未触发保护" if game.falls == 0 else "不止一次出发，终于抵达", 148, 553, 13, Color(MUTED, fade))
-	_text("此刻，世界只剩下风。", 74, h - 99, 17, Color(PAPER, fade))
-
+	_text(game.result_title if not game.result_title.is_empty() else "山在脚下。", 68, 218, 48, Color(PAPER, fade))
+	_wrapped(game.result_detail if not game.result_detail.is_empty() else "而你，比出发时更高了一点。", 74, 257, 600, 18, 25, Color(PAPER, fade))
+	_rule(74, 300, 410, Color(GOLD, fade * 0.4))
+	_text(str(game.active_route.get("name", ROUTE_LABELS[game.route_index])), 74, 343, 28, Color(PAPER, fade))
+	_text(STYLE_NAMES[STYLE_KEYS.find(game.play_style)] + "  ·  %s 米攀登" % str(game.route_height), 74, 376, 16, Color(MUTED, fade))
+	_text("攀登用时", 74, 425, 14, Color(MUTED, fade))
+	_text(game.time_string(game.elapsed), 74, 468, 32, Color(PAPER, fade))
+	_text("落手次数", 230, 425, 14, Color(MUTED, fade))
+	_text(str(game.climber.total_moves), 230, 468, 32, Color(PAPER, fade))
+	_text("绳索保护", 360, 425, 14, Color(MUTED, fade))
+	_text(str(game.falls), 360, 468, 32, Color(PAPER, fade))
+	_panel(Rect2(74, 500, 470, 137), fade * 0.67)
+	_text("此 行 留 痕", 96, 532, 14, Color(GOLD, fade))
+	var badges: String = ""
+	for i: int in range(mini(3, game.earned_badges.size())):
+		badges += ("  ·  " if i > 0 else "") + str(game.earned_badges[i])
+	if badges.is_empty():
+		badges = "不止一次出发，终于抵达。"
+	_text(badges, 96, 569, 17, Color(PAPER, fade))
+	_text("完整成绩与收藏已写入登山日志", 96, 607, 14, Color(MUTED, fade))
+	var safe_count: int = 0
+	var shortcut_count: int = 0
+	for record: String in game.run_collections:
+		if record.ends_with("_safe"):
+			safe_count += 1
+		elif record.ends_with("_shortcut"):
+			shortcut_count += 1
+	_text("登顶日期  ·  " + Time.get_date_string_from_system(), 74, 670, 15, Color(PAPER, fade))
+	_text("沿途足迹  ·  绕行 %d 处  /  捷径 %d 处" % [safe_count, shortcut_count], 74, 701, 15, Color(MUTED, fade))
+	if not game.postcard_path.is_empty():
+		_text("纪念卡已保存至游戏目录 .runtime/postcards", 74, 732, 14, Color(MINT, fade))
+	_text("愿你记得，自己走过的每一步。", 74, h - 99, 17, Color(PAPER, fade))
 func _draw_help(w: float, h: float) -> void:
 	draw_rect(Rect2(0, 0, w, h), Color(0.02, 0.05, 0.06, 0.94))
 	var left: float = w * 0.5 - 390
@@ -282,11 +464,11 @@ func _draw_help(w: float, h: float) -> void:
 	_rule(left, 215, 780)
 	var rows: Array = [
 		["01", "观察路线", "W 标出建议点。带光圈的岩点可抓握，远点更费力。"],
-		["02", "按住，先准备", "对准岩点按住鼠标左 / 右键，选择左 / 右手；脚自动落位。"],
+		["02", "先落脚，再伸手", "鼠标左 / 右键选择双手；Q / E 选左 / 右支撑脚，帮助横渡。"],
 		["03", "双区就绪再松手", "按住 A / D 把重心移入绿区；蓄力白针进入绿区时松开鼠标。"],
 		["04", "把握 4.5 秒", "超时或未对准会失手并扣握力；连续三次失手由安全绳保护。"],
-		["05", "管理镁粉与握力", "空格用镁粉，共 3 次、有冷却；锚点补满，金色岩点回复握力。"],
-		["06", "一步步抵达", "高处绿区更窄。R 返回锚点；沿 72 米风脊向上，留下登顶记录。"]
+		["05", "观察岩面与天气", "小岩点要连贯通过；湿壁可用空格镁粉防滑，阵风时等待风弱。"],
+		["06", "把路留在日志里", "金色岩点恢复握力；R 返回锚点。探索分支与观景点，抵达山顶。"]
 	]
 	for i: int in range(rows.size()):
 		var y: float = 264 + i * 75
@@ -295,9 +477,10 @@ func _draw_help(w: float, h: float) -> void:
 		_text(rows[i][2], left + 59, y + 28, 15, MUTED)
 	_text("Esc 暂停   /   M 声音   /   F11 全屏     ·     进度保存在游戏目录", left, 748, 14, MUTED)
 
-func _button(label: String, rect: Rect2, callback: Callable, primary: bool = false) -> void:
+func _button(label: String, rect: Rect2, callback: Callable, primary: bool = false, locked: bool = false) -> void:
 	var button: Button = Button.new()
 	button.text = label
+	button.disabled = locked
 	button.position = rect.position
 	button.size = rect.size
 	button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
@@ -306,6 +489,7 @@ func _button(label: String, rect: Rect2, callback: Callable, primary: bool = fal
 	button.add_theme_color_override("font_color", INK if primary else PAPER)
 	button.add_theme_color_override("font_hover_color", INK if primary else GOLD)
 	button.add_theme_color_override("font_pressed_color", INK)
+	button.add_theme_color_override("font_disabled_color", Color(MUTED, 0.55))
 	var normal: StyleBoxFlat = StyleBoxFlat.new()
 	normal.bg_color = GOLD if primary else Color(0.08, 0.15, 0.17, 0.6)
 	normal.border_color = Color(0.9, 0.88, 0.77, 0.28)
@@ -317,6 +501,7 @@ func _button(label: String, rect: Rect2, callback: Callable, primary: bool = fal
 	var pressed: StyleBoxFlat = normal.duplicate()
 	pressed.bg_color = GOLD
 	button.add_theme_stylebox_override("normal", normal)
+	button.add_theme_stylebox_override("disabled", normal)
 	button.add_theme_stylebox_override("hover", hover)
 	button.add_theme_stylebox_override("pressed", pressed)
 	button.add_theme_stylebox_override("focus", hover)
@@ -338,24 +523,47 @@ func refresh_buttons() -> void:
 		return
 	match game.mode:
 		"fallen":
-			_button("回到山脚，再试一次" if game.checkpoint == 0 else "回到锚点，继续攀登", Rect2(w * 0.5 - 220, h * 0.5 + 103, 440, 55), game.retry_after_fall, true)
+			_button("回到本段起点，再试一次" if game.play_style == "challenge" else ("回到山脚，再试一次" if game.checkpoint == 0 else "回到锚点，继续攀登"), Rect2(w * 0.5 - 220, h * 0.5 + 103, 440, 55), game.retry_after_fall, true)
 		"menu":
-			var y: float = h * 0.255 + 367
-			_button("开始攀登   ↗", Rect2(72, y, 255, 56), func(): game.start_climb(false), true)
-			_button("攀登手册", Rect2(345, y, 145, 56), game.toggle_help)
-			if bool(game.save_data.get("in_progress", false)):
-				_button("继续上次旅程", Rect2(72, y + 69, 255, 44), func(): game.start_climb(true))
-			_button("声音  " + ("关" if game.muted else "开"), Rect2(w - 267, h - 126, 110, 40), game.toggle_audio)
-			_button("离开", Rect2(w - 143, h - 126, 78, 40), game.quit_game)
+			var card_w: float = (w - 160.0) / 3.0
+			for i: int in range(3):
+				var route_id: int = i
+				var unlocked: bool = game.route_unlocked(i)
+				var label: String = "已选路线  ✓" if game.route_index == i else "选择路线"
+				if not unlocked:
+					label = "登顶前一座山后解锁"
+				_button(label, Rect2(84 + i * (card_w + 16), 389, card_w - 40, 38), func(): game.select_route(route_id), game.route_index == i, not unlocked)
+			for i: int in range(3):
+				var style: String = STYLE_KEYS[i]
+				var locked: bool = style == "extreme" and not game.extreme_unlocked()
+				var label: String = STYLE_NAMES[i] + (" · 登顶后解锁" if locked else "")
+				_button(label, Rect2(64 + i * (card_w + 16), 504, card_w, 48), func(): game.select_style(style), game.play_style == style, locked)
+			if game.play_style == "challenge":
+				for i: int in range(3):
+					var challenge_id: int = i
+					_button(CHALLENGE_NAMES[i], Rect2(64 + i * 210, 609, 194, 43), func(): game.select_challenge(challenge_id), game.challenge_index == i)
+			_button("开始攀登   ↗", Rect2(64, h - 148, 220, 54), func(): game.start_climb(false), true)
+			_button("继续上次旅程", Rect2(296, h - 148, 190, 54), game.continue_journey, false, not bool(game.save_data.get("in_progress", false)))
+			_button("攀登手册", Rect2(498, h - 148, 110, 54), game.toggle_help)
+			_button("登山日志", Rect2(620, h - 148, 110, 54), game.open_journal)
+			_button(["落日橙", "松林绿", "冰川蓝"][game.outfit_index] + " · 换装", Rect2(742, h - 148, 160, 54), game.cycle_outfit)
+			_button("声音 " + ("关" if game.muted else "开"), Rect2(914, h - 148, 100, 54), game.toggle_audio)
+			_button("离开", Rect2(1026, h - 148, 82, 54), game.quit_game)
+		"journal":
+			var per_page: int = maxi(1, int((h - 360) / 33))
+			var pages: int = maxi(1, ceili(float(_journal_rows(w - 196).size()) / per_page))
+			_button("上一页", Rect2(w * 0.5 - 150, h - 145, 130, 48), func(): journal_page = maxi(0, journal_page - 1); refresh_buttons(), false, journal_page <= 0)
+			_button("下一页", Rect2(w * 0.5, h - 145, 130, 48), func(): journal_page = mini(pages - 1, journal_page + 1); refresh_buttons(), false, journal_page >= pages - 1)
+			_button("返回", Rect2(w - 280, h - 145, 182, 48), game.close_journal, true)
 		"paused":
 			_button("继续攀登   ↗", Rect2(w * 0.5 - 166, h * 0.5 - 39, 332, 53), game.toggle_pause, true)
 			_button("攀登手册", Rect2(w * 0.5 - 166, h * 0.5 + 31, 158, 47), game.toggle_help)
 			_button("声音  " + ("关" if game.muted else "开"), Rect2(w * 0.5 + 8, h * 0.5 + 31, 158, 47), game.toggle_audio)
-			_button("保存并返回山脚", Rect2(w * 0.5 - 166, h * 0.5 + 96, 332, 47), game.return_menu)
+			_button("保存并返回群山" if game.play_style == "journey" else "返回群山", Rect2(w * 0.5 - 166, h * 0.5 + 96, 332, 47), game.return_menu)
 		"summit":
-			_button("再攀一次   ↗", Rect2(w - 298, h - 183, 226, 53), func(): game.start_climb(false), true)
-			_button("回到山脚", Rect2(w - 298, h - 114, 226, 43), game.return_menu)
-
-
-
-
+			if game.summit_time < 4.0:
+				return
+			_button("保存登顶纪念卡", Rect2(w - 306, h - 321, 234, 48), game.export_postcard, true)
+			_button("打开纪念卡目录", Rect2(w - 306, h - 258, 234, 48), game.open_postcards)
+			_button("再攀一次   ↗", Rect2(w - 306, h - 195, 234, 48), func(): game.start_climb(false))
+			_button("返回群山", Rect2(w - 306, h - 132, 234, 48), game.return_menu)

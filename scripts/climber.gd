@@ -3,6 +3,16 @@ extends Node3D
 signal reached_hold(hold_id: int)
 signal fell
 var stamina: float = 100.0
+var terrain_drain: float = 0.0
+var support_foot: int = -1
+var _move_support_foot: int = -1
+var _traverse: bool = false
+var _outfit_index: int = 0
+var _jacket_material: StandardMaterial3D
+var _pack_material: StandardMaterial3D
+var _pants_material: StandardMaterial3D
+var _fabric_color: ImageTexture
+var _fabric_normal: ImageTexture
 var climbing: bool = false
 var moving: bool = false
 var current_hold_id: int = 0
@@ -76,7 +86,12 @@ func climb_to(hold: Dictionary, hand: int = -1, effort: float = 4.0) -> bool:
 	_new_feet[0] = _new_body + Vector3(-0.19, -0.92, -0.28)
 	_new_feet[1] = _new_body + Vector3(0.19, -0.88, -0.28)
 	_step_count = maxi(1, ceili(_old_body.distance_to(_new_body) / 0.40))
+	var displacement: Vector3 = _new_body - _old_body
+	_traverse = absf(displacement.x) > 0.45 and absf(displacement.x) > absf(displacement.y) * 0.55
+	_move_support_foot = support_foot
 	_move_duration = maxf(0.90, float(_step_count) * 0.42)
+	if _traverse:
+		_move_duration += 0.20
 	_move_time = 0.0
 	moving = true
 	stamina = maxf(0.0, stamina - move_cost)
@@ -141,6 +156,21 @@ func celebrate(summit_position: Vector3 = Vector3.ZERO) -> void:
 func set_lean(value: float) -> void:
 	_lean_target = clampf(value, -1.0, 1.0)
 
+func set_support_foot(index: int) -> void:
+	# Snapshot on climb_to so changing the next foothold cannot pop an active pose.
+	support_foot = clampi(index, -1, 1)
+
+func set_outfit(index: int) -> void:
+	_outfit_index = clampi(index, 0, 2)
+	if _jacket_material == null:
+		return
+	var jackets: Array[String] = ["e85c34", "4f8063", "80b8d5"]
+	var packs: Array[String] = ["346a69", "b38c59", "405e83"]
+	var trousers: Array[String] = ["253746", "263b43", "343c52"]
+	_jacket_material.albedo_color = Color(jackets[_outfit_index])
+	_pack_material.albedo_color = Color(packs[_outfit_index])
+	_pants_material.albedo_color = Color(trousers[_outfit_index])
+
 func _process(delta: float) -> void:
 	if not _built:
 		return
@@ -168,7 +198,7 @@ func _process(delta: float) -> void:
 	elif moving:
 		_advance_move(delta)
 	elif climbing:
-		stamina = maxf(0.0, stamina - delta * 0.38)
+		stamina = maxf(0.0, stamina - delta * (0.38 + maxf(0.0, terrain_drain)))
 		if stamina <= 0.0 and not _fall_sent:
 			_fall_sent = true
 			fell.emit()
@@ -187,6 +217,8 @@ func _advance_move(delta: float) -> void:
 	_body = _old_body.lerp(_new_body, body_fraction)
 	_body.z += sin(phase * PI) * 0.025
 	var lead_foot: int = (_hand + step_index) % 2
+	if _move_support_foot >= 0:
+		lead_foot = (_move_support_foot + step_index) % 2
 	for i in range(2):
 		var start_foot: Vector3 = _old_feet[i].lerp(_new_feet[i], start_fraction)
 		var end_foot: Vector3 = _old_feet[i].lerp(_new_feet[i], end_fraction)
@@ -195,7 +227,9 @@ func _advance_move(delta: float) -> void:
 		_feet[i] = start_foot.lerp(end_foot, fp)
 		_feet[i].y += sin(fp * PI) * 0.075
 		_feet[i].z += sin(fp * PI) * 0.035
-		var hp: float = smoothstep(0.0, 0.76, p) if i == _hand else smoothstep(0.24, 0.98, p)
+		# Traverse: place the selected foot, push the body, then extend the hand.
+		var reach_delay: float = 0.34 / float(_step_count) if _traverse else 0.0
+		var hp: float = smoothstep(reach_delay, 0.86 if _traverse else 0.76, p) if i == _hand else smoothstep(maxf(0.24, reach_delay), 0.98, p)
 		_hands[i] = _old_hands[i].lerp(_new_hands[i], hp)
 		_hands[i].z += sin(hp * PI) * 0.12
 	if p >= 1.0:
@@ -274,6 +308,56 @@ func _mat(color: String, roughness: float = 0.8, metallic: float = 0.0) -> Stand
 	material.metallic = metallic
 	return material
 
+func _fabric(color: String, roughness: float = 0.92) -> StandardMaterial3D:
+	# One small mipmapped weave is shared by all clothing; colors remain tintable.
+	if _fabric_color == null:
+		var noise := FastNoiseLite.new()
+		noise.seed = 47
+		noise.frequency = 0.24
+		var weave := Image.create(128, 128, false, Image.FORMAT_RGB8)
+		var relief := Image.create(128, 128, false, Image.FORMAT_RGB8)
+		for y in range(128):
+			for x in range(128):
+				var thread: float = sin(float(x) * PI * 0.5) * sin(float(y) * PI * 0.5)
+				var grain: float = noise.get_noise_2d(float(x), float(y))
+				var shade: float = 0.945 + thread * 0.018 + grain * 0.025
+				weave.set_pixel(x, y, Color(shade, shade, shade))
+				var height: float = 0.5 + thread * 0.045 + grain * 0.015
+				relief.set_pixel(x, y, Color(height, height, height))
+		weave.generate_mipmaps()
+		relief.bump_map_to_normal_map(1.0)
+		relief.generate_mipmaps()
+		_fabric_color = ImageTexture.create_from_image(weave)
+		_fabric_normal = ImageTexture.create_from_image(relief)
+	var material := _mat(color, roughness)
+	material.albedo_texture = _fabric_color
+	material.normal_enabled = true
+	material.normal_texture = _fabric_normal
+	material.normal_scale = 0.22
+	material.uv1_scale = Vector3(3.0, 3.0, 1.0)
+	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	return material
+
+func _seams(parent: Node3D, paths: Array[PackedVector3Array], material: Material, radius: float = 0.003) -> void:
+	# Many short stitches/cords share one mesh and one draw call.
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = radius
+	cylinder.bottom_radius = radius
+	cylinder.height = 1.0
+	cylinder.radial_segments = 6
+	for path in paths:
+		for index in range(path.size() - 1):
+			var direction: Vector3 = path[index + 1] - path[index]
+			var axis_y: Vector3 = direction.normalized()
+			var reference: Vector3 = Vector3.FORWARD if absf(axis_y.dot(Vector3.FORWARD)) < 0.95 else Vector3.RIGHT
+			var axis_x: Vector3 = axis_y.cross(reference).normalized()
+			var axis_z: Vector3 = axis_x.cross(axis_y).normalized()
+			var pose := Transform3D(Basis(axis_x, axis_y * direction.length(), axis_z), (path[index] + path[index + 1]) * 0.5)
+			surface.append_from(cylinder, 0, pose)
+	_mesh(parent, surface.commit(), material)
+
 func _mesh(parent: Node3D, shape: Mesh, material: Material, offset: Vector3 = Vector3.ZERO) -> MeshInstance3D:
 	var instance: MeshInstance3D = MeshInstance3D.new()
 	instance.mesh = shape
@@ -286,8 +370,8 @@ func _sphere(parent: Node3D, radius: float, size: Vector3, material: Material, o
 	var shape: SphereMesh = SphereMesh.new()
 	shape.radius = radius
 	shape.height = radius * 2.0
-	shape.radial_segments = 12
-	shape.rings = 6
+	shape.radial_segments = 24
+	shape.rings = 12
 	var instance: MeshInstance3D = _mesh(parent, shape, material, offset)
 	instance.scale = size
 	return instance
@@ -302,7 +386,7 @@ func _bone(parent: Node3D, radius: float, material: Material) -> MeshInstance3D:
 	shape.top_radius = radius * 0.88
 	shape.bottom_radius = radius
 	shape.height = 1.0
-	shape.radial_segments = 10
+	shape.radial_segments = 20
 	return _mesh(parent, shape, material)
 
 func _segment(instance: MeshInstance3D, start: Vector3, finish: Vector3) -> void:
@@ -316,15 +400,20 @@ func _segment(instance: MeshInstance3D, start: Vector3, finish: Vector3) -> void
 
 func _build_avatar() -> void:
 	_built = true
-	var orange: StandardMaterial3D = _mat("e85c34")
-	var pants: StandardMaterial3D = _mat("253746")
+	var orange: StandardMaterial3D = _fabric("e85c34", 0.86)
+	var pants: StandardMaterial3D = _fabric("253746", 0.96)
 	var dark: StandardMaterial3D = _mat("172330")
+	var rubber := _mat("101b22", 0.98)
 	var skin: StandardMaterial3D = _mat("dcc5a2")
 	var rope_material: StandardMaterial3D = _mat("eac77b")
-	var pack_material: StandardMaterial3D = _mat("346a69")
-	var helmet: StandardMaterial3D = _mat("edc47c", 0.48)
-	var metal: StandardMaterial3D = _mat("bac7cb", 0.23, 0.7)
-	var strap_material: StandardMaterial3D = _mat("b9a681")
+	var pack_material: StandardMaterial3D = _fabric("346a69", 0.91)
+	_jacket_material = orange
+	_pack_material = pack_material
+	_pants_material = pants
+	set_outfit(_outfit_index)
+	var helmet: StandardMaterial3D = _mat("edc47c", 0.34, 0.08)
+	var metal: StandardMaterial3D = _mat("bac7cb", 0.26, 0.82)
+	var strap_material: StandardMaterial3D = _fabric("b9a681", 0.95)
 	_torso = Node3D.new()
 	_torso.name = "JacketBackpackAndHarness"
 	add_child(_torso)
@@ -333,6 +422,7 @@ func _build_avatar() -> void:
 	_sphere(_torso, 0.17, Vector3(0.9, 0.55, 0.9), orange, Vector3(0, 0.30, 0.035))
 	_box(_torso, Vector3(0.37, 0.05, 0.32), dark, Vector3(0, -0.24, 0))
 	for side in [-1.0, 1.0]:
+		_sphere(_torso, 0.082, Vector3.ONE, orange, Vector3(side * 0.225, 0.22, -0.02))
 		var strap: MeshInstance3D = _box(_torso, Vector3(0.04, 0.45, 0.027), strap_material, Vector3(side * 0.14, 0.015, 0.17))
 		strap.rotation.z = side * -0.12
 		var leg_loop: MeshInstance3D = _box(_torso, Vector3(0.12, 0.055, 0.30), dark, Vector3(side * 0.13, -0.38, 0))
@@ -340,8 +430,16 @@ func _build_avatar() -> void:
 	_sphere(_torso, 0.24, Vector3(0.72, 0.98, 0.47), pack_material, Vector3(0, 0.03, 0.21))
 	_box(_torso, Vector3(0.25, 0.035, 0.03), strap_material, Vector3(0, 0.02, 0.32))
 	_box(_torso, Vector3(0.055, 0.10, 0.018), helmet, Vector3(0.055, 0.14, 0.33))
-	_box(_torso, Vector3(0.12, 0.10, 0.07), orange, Vector3(-0.04, -0.13, 0.32))
+	_sphere(_torso, 0.075, Vector3(0.9, 0.72, 0.40), orange, Vector3(-0.04, -0.12, 0.31))
 	_sphere(_torso, 0.075, Vector3(0.8, 1.0, 0.7), strap_material, Vector3(0.24, -0.27, 0.20))
+	var seam_material := _mat("5b7774", 0.94)
+	var pack_seams: Array[PackedVector3Array] = []
+	for side in [-1.0, 1.0]:
+		pack_seams.append(PackedVector3Array([Vector3(side * 0.085, -0.155, 0.258), Vector3(side * 0.121, -0.08, 0.274), Vector3(side * 0.135, 0.04, 0.281), Vector3(side * 0.115, 0.16, 0.269), Vector3(side * 0.06, 0.225, 0.25)]))
+	_seams(_torso, pack_seams, seam_material, 0.003)
+	var zipper: Array[PackedVector3Array] = [PackedVector3Array([Vector3(0.015, -0.03, 0.322), Vector3(0.015, 0.05, 0.324), Vector3(0.015, 0.14, 0.31), Vector3(0.015, 0.20, 0.287)])]
+	_seams(_torso, zipper, dark, 0.004)
+	_box(_torso, Vector3(0.012, 0.029, 0.009), metal, Vector3(0.015, 0.17, 0.303))
 	var carabiner: MeshInstance3D = _bone(_torso, 0.012, metal)
 	_segment(carabiner, Vector3(0.20, -0.25, 0.13), Vector3(0.23, -0.36, 0.15))
 	_head = Node3D.new()
@@ -351,6 +449,11 @@ func _build_avatar() -> void:
 	_sphere(_head, 0.142, Vector3(1.0, 0.72, 1.0), dark, Vector3(0, 0.065, 0))
 	_sphere(_head, 0.147, Vector3(1.0, 0.75, 1.0), helmet, Vector3(0, 0.087, 0))
 	_box(_head, Vector3(0.07, 0.027, 0.018), dark, Vector3(0, 0.11, 0.14))
+	var helmet_trim: Array[PackedVector3Array] = []
+	for side in [-1.0, 1.0]:
+		helmet_trim.append(PackedVector3Array([Vector3(side * 0.102, 0.126, 0.098), Vector3(side * 0.115, 0.147, 0.062), Vector3(side * 0.118, 0.15, 0.025)]))
+		helmet_trim.append(PackedVector3Array([Vector3(side * 0.104, 0.04, -0.065), Vector3(side * 0.08, -0.075, -0.054), Vector3(side * 0.032, -0.11, -0.065)]))
+	_seams(_head, helmet_trim, dark, 0.005)
 	for i in range(2):
 		_upper_arms.append(_bone(self, 0.080, orange))
 		_forearms.append(_bone(self, 0.063, orange))
@@ -362,6 +465,9 @@ func _build_avatar() -> void:
 		var boot: MeshInstance3D = _sphere(self, 0.083, Vector3(0.72, 0.63, 1.6), dark)
 		_boots.append(boot)
 		_box(boot, Vector3(0.08, 0.026, 0.11), helmet, Vector3(0, 0.02, -0.045))
+		_sphere(boot, 0.081, Vector3(1.0, 0.24, 0.96), rubber, Vector3(0, -0.039, -0.004))
+		var laces: Array[PackedVector3Array] = [PackedVector3Array([Vector3(-0.032, 0.045, -0.048), Vector3(0.032, 0.045, -0.025), Vector3(-0.032, 0.045, -0.005), Vector3(0.032, 0.043, 0.018)])]
+		_seams(boot, laces, strap_material, 0.003)
 	for i in range(16):
 		_rope.append(_bone(self, 0.011, rope_material))
 	var chalk_material: StandardMaterial3D = _mat("e4dfcc")

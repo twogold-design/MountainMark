@@ -1,12 +1,14 @@
 extends Node3D
-## Mountain Mark: a complete single-route climbing journey.
+## Three mountains, branching journeys, challenges and a persistent expedition journal.
+const Routes = preload("res://scripts/routes.gd")
+const ROUTE_NAMES := ["松风岩脊", "回声峡谷", "云上孤峰"]
 const WorldScript = preload("res://scripts/world.gd")
 const ClimberScript = preload("res://scripts/climber.gd")
 const AudioScript = preload("res://scripts/audio.gd")
 const HudScript = preload("res://scripts/hud.gd")
 const REACH: float = 3.05
 const HEIGHT: float = 72.0
-const CHAPTERS: Array[String] = ["起攀 · 松风岩脚", "第一段 · 风蚀石阶", "第二段 · 云间横渡", "第三段 · 天光之脊", "终点 · 群山之上"]
+var CHAPTERS: Array[String] = ["起攀 · 松风岩脚", "第一段 · 风蚀石阶", "第二段 · 云间横渡", "第三段 · 天光之脊", "终点 · 群山之上"]
 var world: Node3D
 var climber: Node3D
 var sound: Node
@@ -36,6 +38,25 @@ var _auto_test: bool = false
 var _auto_timer: float = 0.0
 var _qa_idle: float = 0.0
 var _save_path: String
+var route_index: int = 0
+var route_height: float = 72.0
+var play_style: String = "journey"
+var challenge_index: int = 0
+var selected_support: int = -1
+var chalk_protection: float = 0.0
+var wind_strength: float = 0.0
+var result_title: String = ""
+var result_detail: String = ""
+var earned_badges: Array[String] = []
+var postcard_path: String = ""
+var outfit_index: int = 0
+var active_route: Dictionary = {}
+var run_collections: Array[String] = []
+var precise_streak: int = 0
+var best_precise_streak: int = 0
+var chalk_used: int = 0
+var _summit_buttons_ready: bool = false
+var _last_grip_failure: String = ""
 var fall_time: float = 0.0
 var fall_reason: String = ""
 var fall_title: String = "这一步，没能抓稳。"
@@ -62,10 +83,13 @@ func _ready() -> void:
 	_load_save()
 	world = WorldScript.new()
 	add_child(world)
-	world.build_world()
+	active_route = Routes.build(0)
+	world.build_world(active_route)
 	climber = ClimberScript.new()
 	add_child(climber)
 	climber.setup(world.holds[0])
+	outfit_index = clampi(int(save_data.get("outfit", 0)), 0, 2)
+	climber.set_outfit(outfit_index)
 	climber.reached_hold.connect(_on_reached)
 	climber.fell.connect(_on_fell)
 	sound = AudioScript.new()
@@ -133,6 +157,11 @@ func _process(delta: float) -> void:
 	toast_time = maxf(0.0, toast_time - delta)
 	if mode == "playing":
 		elapsed += delta
+		chalk_protection = maxf(0.0, chalk_protection - delta)
+		wind_strength = world.get_wind_strength()
+		sound.set_wind_strength(wind_strength)
+		var terrain: String = str(_hold(climber.current_hold_id).get("kind", "normal"))
+		climber.terrain_drain = 0.7 if terrain == "small" else (1.1 if terrain == "wet" and chalk_protection <= 0.0 else 0.0)
 		if current_rest and not climber.moving and not grip_active:
 			climber.rest(delta)
 		var lean: float = float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A))
@@ -147,12 +176,15 @@ func _process(delta: float) -> void:
 		fall_time += delta
 	elif mode == "summit":
 		summit_time += delta
+		if summit_time >= 4.0 and not _summit_buttons_ready:
+			_summit_buttons_ready = true
+			hud.refresh_buttons()
 		if _auto_test and summit_time > 3.0:
 			print("QA_SUCCESS summit reached; moves=", climber.total_moves, "; falls=", falls, "; checkpoints=", checkpoint)
 			_auto_test = false
 			quit_game()
-	var altitude: float = clampf((climber.get_reach_origin().y - 1.0) / HEIGHT, 0.0, 1.0)
-	world.update_atmosphere(altitude, delta)
+	var altitude: float = clampf((climber.get_reach_origin().y - 1.0) / route_height, 0.0, 1.0)
+	world.update_atmosphere(altitude, delta if mode in ["playing", "menu", "summit"] else 0.0)
 	sound.set_altitude(altitude)
 	_update_camera(delta)
 	hud.queue_redraw()
@@ -170,6 +202,8 @@ func _update_camera(delta: float) -> void:
 		target = body.lerp(summit + Vector3(0.0, 1.0, 0.0), progress * 0.7)
 		desired = body + Vector3(lerpf(1.0, 12.0, progress), lerpf(1.5, 6.0, progress), lerpf(9.0, 20.0, progress))
 	else:
+		if current_rest and not grip_active:
+			desired += Vector3(0.6, 0.7, 1.3)
 		desired += Vector3(sin(clock_time * 0.75) * 0.022, sin(clock_time * 1.15) * 0.025, 0.0)
 	if not _camera_ready:
 		camera.position = desired
@@ -180,39 +214,59 @@ func _update_camera(delta: float) -> void:
 		camera.look_at(target, Vector3.UP)
 
 func start_climb(resume: bool = false) -> void:
+	if resume:
+		route_index = clampi(int(save_data.get("route", 0)), 0, 2)
+		play_style = "journey"
+	elif play_style != "challenge" and not route_unlocked(route_index):
+		show_toast("山路尚未开启", "先完成上一条路线，或进入岩段挑战练习。", 4.0)
+		return
+	if play_style == "extreme" and not extreme_unlocked():
+		show_toast("先认识这座山", "完成本路线的登山旅程后，开启极限登顶。", 4.0)
+		return
+	_build_selected_world()
 	sound.reset_ascent()
 	_reset_controls()
 	mode = "playing"
 	help_open = false
 	climber.process_mode = Node.PROCESS_MODE_INHERIT
-	climber.summit_mode = false
 	var start_id: int = 0
 	elapsed = 0.0
 	falls = 0
 	highest = 0.0
 	checkpoint = 0
 	chapter = 0
+	precise_streak = 0
+	best_precise_streak = 0
+	chalk_used = 0
+	postcard_path = ""
+	run_collections.clear()
+	earned_badges.clear()
 	visited.clear()
 	if resume:
-		start_id = int(save_data.get("checkpoint", 0))
+		# Old versions have a different hold layout: safely resume at base.
+		start_id = int(save_data.get("checkpoint", 0)) if int(save_data.get("version", 0)) >= 3 else 0
 		elapsed = float(save_data.get("elapsed", 0.0))
 		falls = int(save_data.get("falls", 0))
-		if start_id >= world.holds.size():
+		chalk_used = int(save_data.get("chalk_used", 0))
+		for item in save_data.get("run_collections", []):
+			run_collections.append(str(item))
+		if start_id < 0 or start_id >= world.holds.size() or not bool(_hold(start_id).checkpoint):
 			start_id = 0
 	var hold: Dictionary = _hold(start_id)
 	climber.setup(hold)
+	climber.set_outfit(outfit_index)
 	climber.total_moves = int(save_data.get("moves", 0)) if resume else 0
 	climber.climbing = true
 	checkpoint = start_id
-	climber.checkpoint_hold_id = start_id
-	climber.checkpoint_position = hold.position
 	current_rest = bool(hold.rest)
 	highest = float(hold.position.y)
-	chapter = mini(4, int(highest / 18.0))
+	chapter = mini(4, int(highest / route_height * 4.0))
 	_camera_ready = false
 	_update_reachable()
 	hud.refresh_buttons()
-	show_toast("每一次向上，都算数。", "按住岩点 → A/D 稳住重心 → 两条绿区同时满足时松手。", 9.0)
+	show_toast(str(active_route.name), challenge_goal_text() if play_style == "challenge" else "金色可休息 · 青色绕行有岩台 · 橙色捷径需连续发力。", 7.0)
+	if resume and int(save_data.get("version", 0)) < 3:
+		show_toast("旧旅程已保留，山路已更新", "旧版锚点布局已变化，本次从营地出发；原登顶成绩仍在。", 8.0)
 
 func _hold(id: int) -> Dictionary:
 	for hold: Dictionary in world.holds:
@@ -223,11 +277,12 @@ func _hold(id: int) -> Dictionary:
 func _update_reachable() -> void:
 	reachable.clear()
 	var origin: Vector3 = climber.get_reach_origin()
+	var links: Array = _hold(climber.current_hold_id).get("links", [])
 	for hold: Dictionary in world.holds:
 		var p: Vector3 = hold.position
 		if int(hold.id) == climber.current_hold_id:
 			continue
-		if origin.distance_to(p) <= REACH and p.y > origin.y - 0.8:
+		if int(hold.id) in links and origin.distance_to(p) <= REACH:
 			reachable.append(int(hold.id))
 	world.set_hold_feedback(reachable, grip_id if grip_active else (hovered_id if hovered_id >= 0 else preview_id), climber.current_hold_id)
 
@@ -257,6 +312,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			if help_open:
 				help_open = false
 				hud.refresh_buttons()
+			elif mode == "journal":
+				close_journal()
 			elif mode == "playing" or mode == "paused":
 				toggle_pause()
 			return
@@ -275,6 +332,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				use_chalk()
 			KEY_R:
 				_on_fell("主动返回")
+			KEY_Q:
+				select_support(0)
+			KEY_E:
+				select_support(1)
 	if event is InputEventMouseButton and mode == "playing":
 		if event.button_index != MOUSE_BUTTON_LEFT and event.button_index != MOUSE_BUTTON_RIGHT:
 			return
@@ -295,7 +356,7 @@ func next_hold_id() -> int:
 	for id: int in reachable:
 		var hold: Dictionary = _hold(id)
 		var p: Vector3 = hold.position
-		if p.y < origin.y + 0.45:
+		if p.y < origin.y:
 			continue
 		var score: float = origin.distance_to(p) + absf(p.x - origin.x) * 0.25
 		if bool(hold.rest):
@@ -322,7 +383,7 @@ func attempt_hold(id: int, hand: int = 0) -> void:
 	preview_id = -1
 	var hold: Dictionary = _hold(id)
 	var span: Vector3 = Vector3(hold.position) - climber.get_reach_origin()
-	var altitude: float = clampf(float(hold.position.y) / HEIGHT, 0.0, 1.0)
+	var altitude: float = clampf(float(hold.position.y) / route_height, 0.0, 1.0)
 	var long_reach: float = clampf((span.length() - 1.4) / 1.6, 0.0, 1.0)
 	grip_target = 0.57 + long_reach * 0.13 + float(id % 3) * 0.035
 	grip_window = lerpf(0.16, 0.10, altitude) - long_reach * 0.015
@@ -334,6 +395,9 @@ func attempt_hold(id: int, hand: int = 0) -> void:
 		return
 	grip_active = true
 	toast_time = 0.0
+	var foot: int = int(hold.get("support", -1))
+	if foot >= 0 and selected_support != foot:
+		show_toast("先让脚站稳", "这一步需要" + ("左脚支撑（Q）" if foot == 0 else "右脚支撑（E）") + "，再稳住重心出手。", 3.0)
 
 func _grip_power_at(seconds: float) -> float:
 	return 0.5 - 0.5 * cos(seconds * TAU / 2.2)
@@ -342,7 +406,8 @@ func _tick_control(delta: float, axis: float) -> void:
 	_slip_cooldown = maxf(0.0, _slip_cooldown - delta)
 	if climber.moving:
 		return
-	var wind: float = sin(clock_time * 1.3 + float(climber.current_hold_id)) * (0.025 + highest / HEIGHT * 0.08)
+	var target_windy: bool = grip_active and str(_hold(grip_id).get("kind", "")) == "wind"
+	var wind: float = sin(clock_time * 1.3) * (0.04 + (wind_strength * 0.55 if target_windy else 0.0))
 	balance = clampf(balance + (axis * 1.25 + (wind if grip_active else 0.0)) * delta, -1.0, 1.0)
 	climber.set_lean(balance)
 	if not grip_active:
@@ -356,18 +421,32 @@ func _tick_control(delta: float, axis: float) -> void:
 		_on_fell()
 
 func grip_ready() -> bool:
-	return grip_active and grip_time >= 0.2 and grip_time < 4.5 and absf(grip_power - grip_target) <= grip_window and absf(balance - balance_target) <= balance_window
+	if not grip_active:
+		return false
+	var foot: int = int(_hold(grip_id).get("support", -1))
+	var supported: bool = foot < 0 or foot == selected_support
+	var wind_ok: bool = str(_hold(grip_id).get("kind", "")) != "wind" or wind_strength < 0.72
+	return supported and wind_ok and grip_time >= 0.2 and grip_time < 4.5 and absf(grip_power - grip_target) <= grip_window and absf(balance - balance_target) <= balance_window
 
 func hold_effort(id: int, hand: int, quality: float) -> float:
 	var span: Vector3 = Vector3(_hold(id).position) - climber.get_reach_origin()
 	var cross_body: bool = (hand == 0 and span.x > 0.55) or (hand == 1 and span.x < -0.55)
 	var repeat_cost: float = 1.5 if hand == _grip_hand_history else 0.0
-	return 4.0 + span.length() * 2.2 + (2.5 if cross_body else 0.0) + repeat_cost + (1.0 - clampf(quality, 0.0, 1.0)) * 3.0
+	var kind: String = str(_hold(id).get("kind", "normal"))
+	var terrain_cost: float = 0.3 if kind == "small" else (4.0 if kind == "wet" and chalk_protection <= 0.0 else 0.0)
+	return terrain_cost + 4.0 + span.length() * 2.2 + (2.5 if cross_body else 0.0) + repeat_cost + (1.0 - clampf(quality, 0.0, 1.0)) * 3.0
 
 func _release_grip(hand: int) -> void:
 	if mode != "playing" or not grip_active or hand != grip_hand:
 		return
 	if not grip_ready():
+		var foot: int = int(_hold(grip_id).get("support", -1))
+		if foot >= 0 and selected_support != foot:
+			_fail_grip("支撑脚没有选稳：Q 左脚 / E 右脚")
+			return
+		if str(_hold(grip_id).get("kind", "")) == "wind" and wind_strength >= 0.72:
+			_fail_grip("阵风正强，先等待飘带落下再出手")
+			return
 		_fail_grip("重心没有稳住" if absf(balance - balance_target) > balance_window else "松手时机不对")
 		return
 	var power_error: float = absf(grip_power - grip_target) / grip_window
@@ -376,7 +455,10 @@ func _release_grip(hand: int) -> void:
 	var id: int = grip_id
 	var effort: float = hold_effort(id, hand, last_quality)
 	_cancel_grip()
+	climber.set_support_foot(selected_support)
 	if climber.climb_to(_hold(id), hand, effort):
+		precise_streak = precise_streak + 1 if last_quality >= 0.65 else 0
+		best_precise_streak = maxi(best_precise_streak, precise_streak)
 		current_rest = false
 		last_hand = hand
 		_grip_hand_history = hand
@@ -393,6 +475,8 @@ func _cancel_grip() -> void:
 	grip_power = 0.0
 
 func _fail_grip(reason: String) -> void:
+	_last_grip_failure = reason
+	precise_streak = 0
 	_cancel_grip()
 	slip_streak += 1
 	last_quality = 0.0
@@ -407,13 +491,18 @@ func _fail_grip(reason: String) -> void:
 func use_chalk() -> bool:
 	if mode != "playing" or grip_active or climber.moving:
 		return false
+	if play_style == "challenge" and challenge_index == 1:
+		show_toast("横渡练习 · 无镁粉", "选好支撑脚，在中间岩台恢复握力。", 3.0)
+		return false
 	if chalk_charges <= 0:
-		show_toast("镁粉用完了", "本段只有三次补粉。到达安全锚点可以补满。", 2.8)
+		show_toast("镁粉用完了", "到达安全锚点可以补满；极限模式每段仅两次。", 2.8)
 		return false
 	if climber.chalk():
 		chalk_charges -= 1
+		chalk_used += 1
+		chalk_protection = 18.0
 		sound.play_chalk()
-		show_toast("拍掉湿气，重新抓握", "握力 +10 · 剩余镁粉 %d/3；到安全锚点补满。" % chalk_charges, 2.3)
+		show_toast("拍掉湿气，重新抓握", "握力 +10 · 防湿 18 秒 · 剩余 %d 次；锚点补满。" % chalk_charges, 2.3)
 		return true
 	show_toast("先让手指缓一缓", "镁粉需要 7 秒后才能再次使用。", 2.0)
 	return false
@@ -422,7 +511,11 @@ func _reset_controls() -> void:
 	_cancel_grip()
 	balance = 0.0
 	balance_target = 0.0
-	chalk_charges = 3
+	chalk_charges = chalk_capacity()
+	chalk_protection = 0.0
+	selected_support = -1
+	climber.set_support_foot(-1)
+	climber.terrain_drain = 0.0
 	slip_streak = 0
 	preview_id = -1
 	last_quality = 0.0
@@ -434,7 +527,7 @@ func _on_reached(id: int) -> void:
 	current_rest = bool(hold.rest)
 	highest = maxf(highest, float(hold.position.y))
 	if bool(hold.checkpoint):
-		chalk_charges = 3
+		chalk_charges = chalk_capacity()
 		checkpoint = id
 		if _auto_test:
 			print("QA_ANCHOR ", id, " y=", hold.position.y)
@@ -442,17 +535,26 @@ func _on_reached(id: int) -> void:
 		climber.checkpoint_hold_id = id
 		if not visited.has(id):
 			sound.play_checkpoint()
-			show_toast("安全锚点 · 已抵达", "留在这里喘口气，握力会自动恢复。进度已保存。", 4.5)
+			show_toast("安全锚点 · 已抵达", "留在这里喘口气，握力会自动恢复。" + ("进度已保存。" if play_style == "journey" else "绳索已固定。"), 4.5)
 		_save_progress()
 	elif current_rest and not visited.has(id):
 		show_toast("找到了休息点", "放松双肩。停留即可恢复握力。", 3.2)
 	visited[id] = true
-	var next_chapter: int = mini(4, int(highest / 18.0))
+	var found: String = str(hold.get("collectible", ""))
+	if not found.is_empty() and found not in run_collections:
+		run_collections.append(found)
+		world.mark_collectible_collected(found)
+		var collections: Dictionary = save_data.get("collections", {})
+		collections[found] = true
+		save_data["collections"] = collections
+		_write_save()
+		show_toast("发现山路记录", "已收进登山日志。探索另一条分支，可以补全这座山的足迹。", 4.0)
+	var next_chapter: int = mini(4, int(highest / route_height * 4.0))
 	if next_chapter > chapter:
 		chapter = next_chapter
 		if chapter < 4:
-			show_toast(CHAPTERS[chapter], ["", "风从岩缝穿过。脚下的路，已经很远。", "云层沉到身后。只听见自己的呼吸。", "最后一段。光就在山脊的另一侧。"][chapter], 5.0)
-	if highest >= HEIGHT - 0.3:
+			show_toast(CHAPTERS[chapter], terrain_hint(), 5.0)
+	if id == world.holds.size() - 1:
 		_finish()
 
 func _on_fell(reason: String = "") -> void:
@@ -464,9 +566,9 @@ func _on_fell(reason: String = "") -> void:
 	if reason == "主动返回":
 		fall_reason = "沿安全绳返回，给双手一点喘息的时间。"
 	elif slip_streak >= 3:
-		fall_reason = "连续三次失手，安全绳接住了你。"
+		fall_reason = "连续三次失手，安全绳接住了你。" + _last_grip_failure
 	else:
-		fall_reason = "握力耗尽，安全绳接住了你。"
+		fall_reason = "握力耗尽，安全绳接住了你。小抓点不宜久留，可改走有岩台的绕行。"
 	_cancel_grip()
 	mode = "fallen"
 	toast_time = 0.0
@@ -478,6 +580,9 @@ func _on_fell(reason: String = "") -> void:
 func retry_after_fall() -> void:
 	# A short guard stops the release/click that caused the fall from dismissing it.
 	if mode != "fallen" or fall_time < 0.6:
+		return
+	if play_style == "challenge":
+		start_climb(false)
 		return
 	_reset_controls()
 	climber.recover()
@@ -491,10 +596,16 @@ func retry_after_fall() -> void:
 	show_toast("重新站稳，再向上。", "已回到山脚营地。先稳住重心，再把握松手时机。" if checkpoint == 0 else "已回到最近的安全锚点，之前的攀登进度仍然保留。", 4.0)
 
 func _save_progress() -> void:
+	if play_style != "journey":
+		return
+	save_data["version"] = 3
+	save_data["route"] = route_index
 	save_data["checkpoint"] = checkpoint
 	save_data["elapsed"] = elapsed
 	save_data["falls"] = falls
 	save_data["moves"] = climber.total_moves
+	save_data["chalk_used"] = chalk_used
+	save_data["run_collections"] = run_collections.duplicate()
 	save_data["in_progress"] = true
 	_write_save()
 
@@ -504,17 +615,59 @@ func _finish() -> void:
 	_cancel_grip()
 	mode = "summit"
 	summit_time = 0.0
+	_summit_buttons_ready = false
 	climber.celebrate(world.get_summit_position())
 	sound.play_summit()
 	toast_time = 0.0
-	save_data["summits"] = int(save_data.get("summits", 0)) + 1
-	save_data["in_progress"] = false
-	var best: float = float(save_data.get("best_time", 0.0))
-	if elapsed < best or best <= 0.0:
-		save_data["best_time"] = elapsed
-	if falls == 0:
-		save_data["clean_ascent"] = true
+	var success: bool = true
+	if play_style == "challenge":
+		success = best_precise_streak >= 5 if challenge_index == 0 else (chalk_used == 0 if challenge_index == 1 else falls == 0)
+	result_title = ("岩段挑战完成" if success else "抵达终点，再精进一点") if play_style == "challenge" else ["松风为你停留。", "回声终于有了回答。", "你站在了云海之上。"][route_index]
+	result_detail = "%s · %s · 跌落 %d 次 · %d 次抓握" % [active_route.name, time_string(elapsed), falls, climber.total_moves]
+	if play_style == "challenge" and not success:
+		result_detail = "本次连续精准 %d / 5；完成整段并连续五次精准抓握即可获得纪念章。" % best_precise_streak
+	var key: String = "challenge_%d" % challenge_index if play_style == "challenge" else "%s_%s" % [Routes.IDS[route_index], play_style]
+	var records: Dictionary = save_data.get("records", {})
+	var record: Dictionary = records.get(key, {})
+	if success:
+		record["completions"] = int(record.get("completions", 0)) + 1
+		if float(record.get("best", 0.0)) <= 0.0 or elapsed < float(record.best):
+			record["best"] = elapsed
+		record["first_date"] = record.get("first_date", Time.get_date_string_from_system())
+		record["last_date"] = Time.get_date_string_from_system()
+		records[key] = record
+		save_data["records"] = records
+		_add_badge("岩段练习生" if play_style == "challenge" else "群山之上")
+		if falls == 0:
+			_add_badge("稳如磐石")
+		if chalk_charges > 0:
+			_add_badge("留有余力")
+		if play_style != "challenge":
+			var completed: Dictionary = save_data.get("completed_routes", {})
+			completed[str(route_index)] = true
+			save_data["completed_routes"] = completed
+			if route_index == 2:
+				_add_badge("云海来客")
+			if play_style == "extreme":
+				_add_badge("孤峰行者")
+			var count: int = 0
+			for collected in save_data.get("collections", {}):
+				if str(collected).begins_with(str(Routes.IDS[route_index])):
+					count += 1
+			if count >= 6:
+				_add_badge("山路熟客")
+			elif count > 0:
+				_add_badge("另辟蹊径")
+			save_data["summits"] = int(save_data.get("summits", 0)) + 1
+			var best: float = float(save_data.get("best_time", 0.0))
+			if elapsed < best or best <= 0.0:
+				save_data["best_time"] = elapsed
+			if falls == 0:
+				save_data["clean_ascent"] = true
+	if play_style == "journey":
+		save_data["in_progress"] = false
 	_write_save()
+	_save_postcard_record()
 	hud.refresh_buttons()
 
 func toggle_pause() -> void:
@@ -588,9 +741,197 @@ func _run_qa(delta: float) -> void:
 			use_chalk()
 		var id: int = next_hold_id()
 		if id >= 0:
+			select_support(int(_hold(id).get("support", -1)))
+			if str(_hold(id).get("kind", "")) == "wind" and wind_strength > 0.40:
+				return
 			var hand: int = 0 if Vector3(_hold(id).position).x < climber.get_reach_origin().x else 1
 			attempt_hold(id, hand)
 		_qa_idle = 0.0
 
 
+
+
+func route_info() -> Dictionary:
+	return Routes.info(route_index)
+
+func route_unlocked(index: int) -> bool:
+	if index == 0:
+		return true
+	var completed: Dictionary = save_data.get("completed_routes", {})
+	return bool(completed.get(str(index - 1), false)) or (index == 1 and int(save_data.get("summits", 0)) > 0)
+
+func extreme_unlocked() -> bool:
+	return bool(save_data.get("completed_routes", {}).get(str(route_index), false)) or (route_index == 0 and int(save_data.get("summits", 0)) > 0)
+
+func _build_selected_world() -> void:
+	if is_instance_valid(world):
+		remove_child(world)
+		world.free()
+	active_route = Routes.build(route_index, play_style, challenge_index)
+	CHAPTERS.assign([
+		["起攀 · 松风营地", "林间 · 晨光岩台", "分岔 · 旧路足迹", "山脊 · 松涛渐远", "终点 · 松风岩脊"],
+		["起攀 · 峡谷入口", "横渡 · 两壁回声", "湿壁 · 飞瀑水汽", "出谷 · 天光渐近", "终点 · 回声峡谷"],
+		["起攀 · 雪岭营地", "岩阶 · 寒风初起", "山脊 · 阵风间隙", "云上 · 最后的攀登", "终点 · 云上孤峰"]
+	][route_index])
+	if play_style == "challenge":
+		CHAPTERS.assign([str(active_route.name), "观察 · 选择落点", "练习 · 调整姿态", "稳住 · 最后几步", "完成 · 岩段挑战"])
+	route_height = float(active_route.height)
+	world = WorldScript.new()
+	add_child(world)
+	world.build_world(active_route)
+	for found in save_data.get("collections", {}):
+		world.mark_collectible_collected(str(found))
+	wind_strength = 0.0
+	sound.set_route_theme((1 if challenge_index > 0 else 0) if play_style == "challenge" else route_index)
+	sound.set_wind_strength(0.0)
+	climber.setup(world.holds[0])
+	climber.set_outfit(outfit_index)
+	_camera_ready = false
+
+func select_route(index: int) -> void:
+	if mode != "menu":
+		return
+	route_index = clampi(index, 0, 2)
+	_build_selected_world()
+	hud.refresh_buttons()
+
+func select_style(style: String) -> void:
+	if mode != "menu" or style not in ["journey", "challenge", "extreme"]:
+		return
+	play_style = style
+	_build_selected_world()
+	hud.refresh_buttons()
+
+func select_challenge(index: int) -> void:
+	if mode != "menu":
+		return
+	challenge_index = clampi(index, 0, 2)
+	_build_selected_world()
+	hud.refresh_buttons()
+
+func continue_journey() -> void:
+	start_climb(true)
+
+func select_support(index: int) -> void:
+	if climber.moving:
+		return
+	selected_support = clampi(index, -1, 1)
+	climber.set_support_foot(selected_support)
+
+func chalk_capacity() -> int:
+	return 2 if play_style == "extreme" else 3
+
+func challenge_goal_text() -> String:
+	if play_style == "challenge":
+		return ["连续 5 次精准抓握并抵达终点 · 当前最佳 %d/5" % best_precise_streak, "不使用镁粉完成横渡 · Q 左支撑 / E 右支撑", "零跌落通过湿壁 · 镁粉防湿 18 秒"][challenge_index]
+	if play_style == "extreme":
+		return "极限登顶 · 每段 2 次镁粉 · 仅半山锚点 · 本地独立纪录"
+	return "观察分岔 · 绕行可休息 · 捷径需连攀"
+
+func terrain_hint() -> String:
+	var id: int = grip_id if grip_active else hovered_id
+	if id < 0:
+		id = climber.current_hold_id
+	var hold: Dictionary = _hold(id)
+	var foot: int = int(hold.get("support", -1))
+	if foot >= 0:
+		return "横渡 · 先按 " + ("Q 选左脚支撑" if foot == 0 else "E 选右脚支撑") + "，再移重心、伸手"
+	match str(hold.get("kind", "normal")):
+		"wet":
+			return "湿壁 · 镁粉保护剩余 %.0f 秒" % chalk_protection if chalk_protection > 0.0 else "湿壁 · 握力消耗增加；空格镁粉可防湿 18 秒"
+		"small":
+			return "小抓点 · 悬停更费握力，提前看好下一步"
+		"wind":
+			return "阵风正强 · 贴壁等待，飘带垂下再出手" if wind_strength >= 0.72 else "风势减弱 · 稳住重心，趁间隙攀登"
+	if current_rest and reachable.size() > 1:
+		return "前方分岔 · 左侧绕行有休息点，右侧捷径连续发力"
+	return "岩台可以恢复握力；观察下一段，再决定走法" if current_rest else "交替用手、选择近点，让握力留得更久"
+
+func _add_badge(badge: String) -> void:
+	if badge not in earned_badges:
+		earned_badges.append(badge)
+	var badges: Dictionary = save_data.get("badges", {})
+	badges[badge] = Time.get_date_string_from_system()
+	save_data["badges"] = badges
+
+func open_journal() -> void:
+	if mode != "menu":
+		return
+	mode = "journal"
+	hud.refresh_buttons()
+
+func close_journal() -> void:
+	mode = "menu"
+	hud.refresh_buttons()
+
+func cycle_outfit() -> void:
+	var unlocked: int = 1
+	if int(save_data.get("summits", 0)) > 0 or save_data.get("collections", {}).size() >= 2:
+		unlocked = 2
+	if save_data.get("completed_routes", {}).size() >= 3 or save_data.get("collections", {}).size() >= 6:
+		unlocked = 3
+	outfit_index = (outfit_index + 1) % unlocked
+	climber.set_outfit(outfit_index)
+	save_data["outfit"] = outfit_index
+	_write_save()
+	show_toast(["落日橙", "松林绿", "冰川蓝"][outfit_index], "收集 2 / 6 份山路记录，可解锁更多服装与背包配色。", 4.0)
+	hud.refresh_buttons()
+
+func journal_lines() -> Array[String]:
+	var lines: Array[String] = ["登山日志  /  你的每一步，都留下山痕", ""]
+	var records: Dictionary = save_data.get("records", {})
+	for i in range(3):
+		lines.append(ROUTE_NAMES[i] + (" · 已开启" if route_unlocked(i) else " · 完成前一座山后开启"))
+		for style: String in ["journey", "extreme"]:
+			var record: Dictionary = records.get("%s_%s" % [Routes.IDS[i], style], {})
+			var label: String = "旅程" if style == "journey" else "极限"
+			lines.append("  %s：%s" % [label, "尚未登顶" if record.is_empty() else "登顶 %d 次 · 最佳 %s · 首登 %s" % [record.completions, time_string(float(record.best)), record.first_date]])
+		var count: int = 0
+		for item in save_data.get("collections", {}):
+			if str(item).begins_with(str(Routes.IDS[i])):
+				count += 1
+		lines.append("  山路记录 %d / 6 · 绕行与捷径各有三处足迹" % count)
+		lines.append("")
+	for i in range(3):
+		var record: Dictionary = records.get("challenge_%d" % i, {})
+		lines.append("挑战 · %s：%s" % [Routes.CHALLENGES[i], "等待挑战" if record.is_empty() else "完成 %d 次 · 最佳 %s" % [record.completions, time_string(float(record.best))]])
+	lines.append("")
+	lines.append("纪念章：" + ("尚未获得" if save_data.get("badges", {}).is_empty() else "、".join(save_data.get("badges", {}).keys())))
+	lines.append("配色：收集 2 份记录解锁松林绿，6 份记录解锁冰川蓝。")
+	lines.append("纪念卡：每次完成都会保留文字记录；结算页可保存带风景的图片。")
+	for item in save_data.get("collections", {}):
+		var pieces: PackedStringArray = str(item).split("_")
+		if pieces.size() == 3:
+			var r: int = Routes.IDS.find(pieces[0])
+			if r >= 0:
+				lines.append("拾得 · %s 第%d段 · %s" % [ROUTE_NAMES[r], int(pieces[1]) + 1, "岩台上的旧登山笔记：慢一点，山会等你。" if pieces[2] == "safe" else "捷径石堆旁的刻痕：稳住下一步，再看远方。"])
+	return lines
+
+func _save_postcard_record() -> void:
+	if _auto_test or "--qa-capture" in OS.get_cmdline_user_args():
+		return
+	var folder: String = _data_path("postcards")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var filename: String = "%s_%s_%d.txt" % [str(active_route.id), play_style, Time.get_unix_time_from_system()]
+	var file := FileAccess.open(folder.path_join(filename), FileAccess.WRITE)
+	if file:
+		file.store_string("山痕 · 登顶纪念\n" + result_title + "\n" + result_detail + "\n" + Time.get_datetime_string_from_system() + "\n纪念章：" + "、".join(earned_badges) + "\n走过的分支：" + "、".join(run_collections))
+
+func export_postcard() -> void:
+	if mode != "summit":
+		return
+	await RenderingServer.frame_post_draw
+	var folder: String = _data_path("postcards")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var filename: String = "%s_%s_%d.png" % [str(active_route.id), play_style, Time.get_unix_time_from_system()]
+	var target: String = folder.path_join(filename)
+	var error: Error = get_viewport().get_texture().get_image().save_png(target)
+	if error == OK:
+		postcard_path = target
+		hud.refresh_buttons()
+
+func open_postcards() -> void:
+	var folder: String = _data_path("postcards")
+	DirAccess.make_dir_recursive_absolute(folder)
+	OS.shell_open(folder)
 
