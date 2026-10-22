@@ -4,6 +4,8 @@ extends Node
 var _wind: AudioStreamPlayer
 var _air: AudioStreamPlayer
 var _breath: AudioStreamPlayer
+var _voice: AudioStreamPlayer
+var _recovery: AudioStreamPlayer
 var _music: AudioStreamPlayer
 var _route_bed: AudioStreamPlayer
 var _route_theme: int = 0
@@ -20,9 +22,21 @@ var _started: bool = false
 var _summit: bool = false
 var _breath_timer: float = 9.0
 var _grip_count: int = 0
+const FAR_REACH_RATIO: float = 0.72
+const FATIGUE_ENTER: float = 35.0
+const FATIGUE_EXIT: float = 42.0
+var _climbing_active: bool = false
+var _resting: bool = false
+var _stamina: float = 100.0
+var _fatigued: bool = false
+var _voice_clip: String = ""
+var _voice_lock: float = 0.0
+var _exertion_cooldown: float = 0.0
+var _voice_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 func _ready() -> void:
-	for clip_name: String in ["wind", "air", "breath", "grip", "chalk", "fall", "checkpoint", "summit"]:
+	_voice_rng.randomize()
+	for clip_name: String in ["wind", "air", "breath", "grip", "chalk", "fall", "checkpoint", "summit", "effort_1", "effort_2", "pant", "recovery"]:
 		var stream: AudioStreamWAV = load("res://assets/audio/" + clip_name + ".wav") as AudioStreamWAV
 		if stream != null:
 			if clip_name == "wind" or clip_name == "air":
@@ -33,6 +47,8 @@ func _ready() -> void:
 	_wind = _make_player("Wind", -18.0)
 	_air = _make_player("DistantAir", -23.0)
 	_breath = _make_player("Breathing", -16.0)
+	_voice = _make_player("ClimberVoice", -11.0)
+	_recovery = _make_player("RestReward", -13.0)
 	_music = _make_player("SummitMusic", -12.0)
 	_route_bed = _make_player("RouteNature", -28.0)
 	for theme in range(3):
@@ -52,6 +68,8 @@ func _process(delta: float) -> void:
 	if not _started:
 		return
 	_grip_duck = maxf(0.0, _grip_duck - delta)
+	_voice_lock = maxf(0.0, _voice_lock - delta)
+	_exertion_cooldown = maxf(0.0, _exertion_cooldown - delta)
 	_wind_smoothed = move_toward(_wind_smoothed, _wind_strength, delta * 1.8)
 	var theme_gain: float = [-2.5, -5.0, 0.0][_route_theme]
 	var wind_gain: float = -21.0 + _altitude * 3.0 + theme_gain + _wind_smoothed * 7.0
@@ -66,12 +84,78 @@ func _process(delta: float) -> void:
 		air_gain -= 10.0
 	_wind.volume_db = lerpf(_wind.volume_db, -80.0 if _muted else wind_gain, minf(delta * 2.0, 1.0))
 	_air.volume_db = lerpf(_air.volume_db, -80.0 if _muted else air_gain, minf(delta, 1.0))
+	if not _climbing_active or _resting or _summit or _muted:
+		return
 	_breath_timer -= delta
-	if _breath_timer <= 0.0 and not _summit:
-		_breath_timer = randf_range(10.0, 17.0)
-		if _grip_count > 0:
-			_play_on(_breath, "breath", -17.0)
-			_grip_count = 0
+	if _breath_timer <= 0.0 and not _voice.playing and not _breath.playing and _voice_lock <= 0.0:
+		if _fatigued:
+			var urgency: float = 1.0 - clampf(_stamina / FATIGUE_ENTER, 0.0, 1.0)
+			_voice.pitch_scale = lerpf(0.96, 1.10, urgency) * _voice_rng.randf_range(0.98, 1.02)
+			_voice_clip = "pant"
+			_play_on(_voice, "pant", lerpf(-15.0, -9.5, urgency))
+			_breath_timer = lerpf(3.5, 1.9, urgency) + _voice_rng.randf_range(-0.12, 0.12)
+			_grip_duck = maxf(_grip_duck, 0.7)
+		else:
+			_breath_timer = _voice_rng.randf_range(10.0, 17.0)
+			if _grip_count > 0:
+				_play_on(_breath, "breath", -19.0)
+				_grip_count = 0
+
+func set_climbing_state(stamina: float, active: bool, resting: bool) -> void:
+	_stamina = clampf(stamina, 0.0, 100.0)
+	_climbing_active = active
+	_resting = resting and active
+	if not active or _resting:
+		_fatigued = false
+		_breath_timer = 9.0
+		_stop_voice()
+		if not active:
+			_recovery.stop()
+		return
+	var was_fatigued: bool = _fatigued
+	if _stamina < FATIGUE_ENTER:
+		_fatigued = true
+	elif _stamina >= FATIGUE_EXIT:
+		_fatigued = false
+	if _fatigued and not was_fatigued:
+		_breath.stop()
+		_breath_timer = minf(_breath_timer, 0.25)
+	elif was_fatigued and not _fatigued:
+		if _voice_clip == "pant":
+			_voice.stop()
+		_breath_timer = 9.0
+
+func _stop_voice() -> void:
+	_breath.stop()
+	_voice.stop()
+	_voice_clip = ""
+	_voice_lock = 0.0
+	_exertion_cooldown = 0.0
+
+func play_exertion(distance: float, reach_limit: float, move_duration: float) -> void:
+	if not _started or not _climbing_active or _resting or _summit or _muted or _exertion_cooldown > 0.0:
+		return
+	var reach_ratio: float = maxf(0.0, distance) / maxf(0.01, reach_limit)
+	if reach_ratio < FAR_REACH_RATIO:
+		return
+	var intensity: float = clampf(inverse_lerp(FAR_REACH_RATIO, 1.0, reach_ratio), 0.0, 1.0)
+	_breath.stop()
+	_voice.stop()
+	_voice_clip = "effort_%d" % _voice_rng.randi_range(1, 2)
+	_voice.pitch_scale = _voice_rng.randf_range(0.96, 1.04)
+	_play_on(_voice, _voice_clip, lerpf(-13.0, -8.5, intensity))
+	_exertion_cooldown = 0.85
+	_voice_lock = maxf(0.85, move_duration * 0.55)
+	_breath_timer = maxf(_breath_timer, _voice_lock + 0.25)
+	_grip_duck = maxf(_grip_duck, 0.65)
+
+func play_recovery(checkpoint: bool = false) -> void:
+	if not _started or not _climbing_active or _summit or _muted:
+		return
+	_stop_voice()
+	_grip_count = 0
+	_play_on(_recovery, "checkpoint" if checkpoint else "recovery", -14.0 if checkpoint else -12.5)
+	_grip_duck = maxf(_grip_duck, 1.1)
 
 func _play_on(player: AudioStreamPlayer, clip: String, gain: float) -> void:
 	if _muted or not _clips.has(clip):
@@ -171,6 +255,7 @@ func play_chalk() -> void:
 	_effect("chalk", -10.0, true)
 
 func play_fall() -> void:
+	set_climbing_state(_stamina, false, false)
 	_effect("fall", -10.0)
 
 func play_checkpoint() -> void:
@@ -178,7 +263,7 @@ func play_checkpoint() -> void:
 
 func play_summit() -> void:
 	_summit = true
-	_breath.stop()
+	set_climbing_state(_stamina, false, false)
 	_play_on(_music, "summit", -10.0)
 
 func set_muted(muted: bool) -> void:
@@ -187,7 +272,9 @@ func set_muted(muted: bool) -> void:
 		_wind.volume_db = -80.0
 		_air.volume_db = -80.0
 		_route_bed.volume_db = -80.0
-		_breath.stop()
+		_stop_voice()
+		_breath_timer = maxf(_breath_timer, 2.0)
+		_recovery.stop()
 		_music.stop()
 		for player: AudioStreamPlayer in _effects:
 			player.stop()
@@ -197,6 +284,7 @@ func _exit_tree() -> void:
 
 func shutdown() -> void:
 	_started = false
+	_climbing_active = false
 	# Looping streams retain their playback; explicitly release before shutdown.
 	for child: Node in get_children():
 		if child is AudioStreamPlayer:
@@ -208,6 +296,7 @@ func shutdown() -> void:
 	_theme_streams.clear()
 
 func reset_ascent() -> void:
+	set_climbing_state(100.0, false, false)
 	_summit = false
 	_wind_strength = 0.0
 	_wind_smoothed = 0.0

@@ -129,7 +129,7 @@ func _draw_menu(w: float, h: float) -> void:
 	_text("M O U N T A I N   M A R K", 122, 69, 14)
 	_text("山 痕", 60, 160, 70)
 	_text("每一座山，都有自己的抵达方式。", 286, 149, 22, MUTED)
-	_text("远 行 更 新  /  0.3.1", w - 246, 69, 14, GOLD)
+	_text("重 心 联 动  /  0.3.2", w - 246, 69, 14, GOLD)
 	_text("01  选择你的下一座山", 64, 204, 16, GOLD)
 	var card_w: float = (w - 160.0) / 3.0
 	for i: int in range(3):
@@ -204,21 +204,25 @@ func _draw_game(w: float, h: float) -> void:
 	draw_circle(Vector2(rx, lerpf(bottom, top, prog)), 5.0, PAPER)
 	_text("顶", rx - 8, top - 22, 14, PAPER)
 	_text("%02d%%" % int(prog * 100), rx - 20, bottom + 33, 13, MUTED)
-	if game.current_rest and game.reachable.size() > 1 and game.play_style != "challenge":
+	if game.current_rest and game.readable.size() > 1 and game.play_style != "challenge":
 		_draw_route_sketch(w)
-	# Projected reachable points remain visible against complex rock geometry.
+	# Candidates remain visible while the player shifts into actual reach.
 	if game.mode == "playing":
 		if game.preview_id >= 0 and game.camera_reading:
-			var preview_hold: Dictionary = game._hold(game.preview_id)
-			var preview_pos: Vector3 = preview_hold.position
-			if not game.camera.is_position_behind(preview_pos):
-				var body_screen: Vector2 = game.camera.unproject_position(game.climber.get_body_position() + Vector3(0.0, 0.12, 0.0))
+			var preview_info: Dictionary = game.hold_reach_info(game.preview_id)
+			var shoulder: Vector3 = preview_info.shoulder
+			var preview_pos: Vector3 = preview_info.target
+			if not game.camera.is_position_behind(preview_pos) and not game.camera.is_position_behind(shoulder):
+				var shoulder_screen: Vector2 = game.camera.unproject_position(shoulder)
 				var hold_screen: Vector2 = game.camera.unproject_position(preview_pos)
-				draw_line(body_screen, hold_screen, Color(MINT, 0.58), 2.0, true)
-				draw_circle(body_screen, 4.0, Color(MINT, 0.80))
-				_text("重心向左" if hold_screen.x < body_screen.x - 18.0 else ("重心向右" if hold_screen.x > body_screen.x + 18.0 else "重心居中"), body_screen.x + 12.0, body_screen.y - 10.0, 12, MINT)
-		for id: int in game.reachable:
+				var line_color: Color = MINT if bool(preview_info.reachable) else GOLD
+				draw_line(shoulder_screen, hold_screen, Color(line_color, 0.58), 2.0, true)
+				draw_circle(shoulder_screen, 4.0, Color(line_color, 0.80))
+				_wrapped(game.balance_hint_for_hold(game.preview_id), clampf(shoulder_screen.x + 12.0, 25.0, w - 310.0), shoulder_screen.y - 10.0, 280.0, 12, 18, line_color)
+		for id: int in game.readable:
 			var hold: Dictionary = game._hold(id)
+			var reach_info: Dictionary = game.hold_reach_info(id)
+			var in_reach: bool = game.reachable.has(id)
 			var pos: Vector3 = hold.position
 			if game.camera.is_position_behind(pos):
 				continue
@@ -230,14 +234,13 @@ func _draw_game(w: float, h: float) -> void:
 			var preview: bool = id == game.preview_id
 			var branch: String = str(hold.get("branch", "main"))
 			var branch_color: Color = MINT if branch == "safe" else (Color("f0a06a") if branch == "shortcut" else PAPER)
-			var color: Color = MINT if selected or preview else (GOLD if bool(hold.rest) else branch_color)
+			var color: Color = MINT if in_reach else GOLD
 			var rad: float = 24.0 if selected else (22.0 if hover else 15.0)
 			draw_circle(p, rad + 3, Color(0.025, 0.08, 0.08, 0.24))
 			draw_arc(p, rad, game.clock_time * 0.15, game.clock_time * 0.15 + TAU * 0.82, 42, color, 2.0 if hover else 1.3, true)
 			draw_circle(p, 3, color)
 			if preview and not hover and not selected:
-				_text("观察目标", p.x + 23, p.y - 16, 13, MINT)
-				_text(game.balance_hint_for_hold(id), p.x + 23, p.y + 22, 13, MINT)
+				_text("当前可达" if in_reach else "移重心后可达", p.x + 23, p.y - 16, 13, color)
 			var label_y: float = p.y + 6
 			if branch in ["safe", "shortcut"]:
 				_text("绕行" if branch == "safe" else "捷径", p.x + 23, label_y, 13, branch_color)
@@ -250,16 +253,26 @@ func _draw_game(w: float, h: float) -> void:
 				var collected: bool = game.save_data.get("collections", {}).has(collectible)
 				_text("足迹已记录" if collected else "◇ 山路记录", p.x + 23, label_y, 12, MUTED if collected else GOLD)
 			if hover:
-				var reach_distance: float = game.climber.get_reach_origin().distance_to(pos)
-				var effort: String = "稳妥" if reach_distance < 1.7 else ("需发力" if reach_distance < 2.4 else "远点 · 费力")
-				_text("按住左 / 右键准备", p.x + 29, p.y - 31, 15, PAPER)
-				_text("%.1f m  ·  %s" % [reach_distance, effort], p.x + 29, p.y - 10, 12, MUTED)
+				var hover_x: float = clampf(p.x + 29.0, 25.0, w - 300.0)
+				var reach_status: String = "当前可达" if in_reach else "先移重心，再出手"
+				if not bool(reach_info.support_ok):
+					reach_status = "先按 Q / E 选择支撑脚"
+				var effort: float = game.hold_effort(id, int(reach_info.hand), 0.65)
+				_text(reach_status + " · 按住鼠标准备", hover_x, p.y - 31, 13, color)
+				_text("预计消耗 %.1f 握力" % effort, hover_x, p.y - 10, 12, MUTED)
+		if not game.climber.moving:
+			_draw_foot_labels(w, h)
 	# Bottom-left grip meter, modelled after a field instrument.
 	_panel(Rect2(36, h - 172, 310, 113), 0.78)
 	var stamina: float = game.climber.stamina
 	var color: Color = MINT if stamina > 40 else GOLD
 	if stamina < 22:
 		color = Color("ee896e")
+	if game.current_rest and not game.climber.moving and not game.grip_active:
+		color = MINT
+		if game.rest_feedback_time > 0.0:
+			var glow: float = minf(1.0, game.rest_feedback_time) * (0.35 + 0.15 * sin(game.clock_time * 4.0))
+			draw_rect(Rect2(36, h - 172, 310, 113), Color(MINT, glow), false, 2.0, true)
 	_text("握 力", 56, h - 138, 15, MUTED)
 	_text("挑战禁用镁粉" if game.play_style == "challenge" and game.challenge_index == 1 else "镁粉 %d / %d" % [game.chalk_charges, game.chalk_capacity()], 135, h - 138, 13, GOLD if game.chalk_charges > 0 else MUTED)
 	_text("%03d" % int(stamina), 253, h - 134, 25, color)
@@ -270,44 +283,97 @@ func _draw_game(w: float, h: float) -> void:
 	if game.grip_active:
 		status = "准备中 · 先确认支撑与双区"
 	elif game.climber.moving:
-		status = "伸手  ·  抓握  ·  蹬腿"
+		status = "踩稳  ·  蹬腿  ·  伸手"
 	elif game.current_rest:
-		status = "安全休息中  ·  握力正在恢复"
+		if game.rest_feedback_time > 0.0:
+			var recovered: int = maxi(0, int(stamina - game.rest_feedback_stamina))
+			status = "歇稳了  ·  握力 +%d" % recovered if stamina < 99.0 else "缓过来了  ·  握力已恢复"
+		else:
+			status = "安全休息中  ·  握力正在恢复"
 	elif stamina < 30:
 		status = "握力告急  ·  空格使用镁粉"
 	_text(status, 56, h - 79, 13, color)
 	_panel(Rect2(360, h - 119, w - 396, 83), 0.74)
-	_text("按住鼠标准备 → A / D 调重心 → 双区就绪后松开", 375, h - 81, 15, PAPER)
-	_text("W 观察  ·  中键拖拽 / Z X 读线  ·  Q / E 选脚  ·  空格 镁粉  ·  R 返回  ·  Esc 暂停  ·  M 声音  ·  F11 全屏", 375, h - 52, 13, MUTED)
+	_text("先选支撑脚 → A / D 移重心 → 按住鼠标，双区就绪后蹬腿伸手", 375, h - 81, 15, PAPER)
+	_text("W 观察 · 中键 / Z X 读线 · Q / E 选脚 · 空格 镁粉 · R 返回 · Esc 暂停", 375, h - 52, 13, MUTED)
 	if game.play_style != "journey":
 		_text(game.time_string(game.elapsed), w - 128, 168, 21, PAPER)
-	_panel(Rect2(36, 153, 310, 162), 0.70)
-	var support: String = "自动落脚"
-	if game.selected_support >= 0:
-		support = "左脚支撑" if game.selected_support == 0 else "右脚支撑"
-	_text("Q / E  " + support, 55, 181, 15, MINT)
-	_text("岩面观察", 55, 208, 12, MUTED)
-	_wrapped(game.terrain_hint(), 55, 235, 271, 14, 21, PAPER)
+	_draw_support_card()
 	var weather: String = "风力 %.0f%%" % (game.wind_strength * 100.0)
 	if game.chalk_protection > 0.0:
 		weather += "  ·  防滑 %.0f 秒" % game.chalk_protection
-	_text(weather, 55, 294, 13, GOLD)
+	_text(weather, 55, 440, 13, GOLD)
 	if game.play_style == "challenge":
-		_panel(Rect2(36, 328, 310, 85), 0.75)
-		_wrapped(game.challenge_goal_text(), 55, 356, 270, 13, 21, GOLD)
+		_panel(Rect2(36, 468, 310, 85), 0.75)
+		_wrapped(game.challenge_goal_text(), 55, 496, 270, 13, 21, GOLD)
 	if game.grip_active:
 		_draw_grip_controls(w, h)
 	elif game.mode == "playing" and not game.climber.moving:
 		_panel(Rect2(370, h - 197, w - 406, 58), 0.56)
-		var hint: String = "先按 W 标记目标；中键拖拽或 Z / X 读线，再按住带光圈的岩点。"
+		var hint: String = "W 标记目标；中键 / Z X 读线。青圈当前可达，金圈先按 A / D 移重心。"
 		if game.current_rest:
-			hint = "在金色岩点休息。选好路线，再按住鼠标准备下一步。"
+			hint = "在休息岩台恢复握力。选好路线，再按住鼠标准备下一步。"
 		if game.slip_streak > 0:
 			hint = "连续失手 %d / 3 · 稳住重心再松手，第三次将触发安全绳。" % game.slip_streak
 		if game.preview_id >= 0 and game.camera_reading:
-			hint = "读线视角：%s · 中键拖拽或 Z / X 调整镜头，确认落点与身体的横向关系。" % game.balance_hint_for_hold(game.preview_id)
-		_text(hint, 389, h - 162, 14, GOLD if game.slip_streak > 0 else MUTED)
+			hint = "%s · 辅助线从推荐手肩膀连向岩点；A / D 方向始终按岩壁左右。" % game.balance_hint_for_hold(game.preview_id)
+		_wrapped(hint, 389, h - 174, w - 444, 14, 21, GOLD if game.slip_streak > 0 else MUTED)
 	_draw_toast(w)
+
+func _draw_support_card() -> void:
+	_panel(Rect2(36, 153, 310, 302), 0.78)
+	_text("支撑脚  /  先踩稳，再发力", 55, 178, 13, GOLD)
+	var support: int = int(game.selected_support)
+	for i: int in range(2):
+		var left: float = 55.0 + float(i) * 140.0
+		var selected: bool = support == i
+		var accent: Color = MINT if selected else MUTED
+		draw_rect(Rect2(left, 189, 132, 59), Color(MINT, 0.17) if selected else Color(MUTED, 0.05))
+		draw_rect(Rect2(left, 189, 132, 59), Color(accent, 0.82 if selected else 0.24), false, 1.5)
+		_text("Q" if i == 0 else "E", left + 11, 224, 26, accent)
+		_text("左脚" if i == 0 else "右脚", left + 47, 214, 17, accent)
+		_text("支撑中" if selected else ("待选" if support < 0 else "可移动"), left + 47, 237, 12, accent)
+	var support_text: String = "自动落脚 · 按 Q / E 指定支撑脚"
+	if support >= 0:
+		support_text = "左脚踩稳 · 右脚可移动" if support == 0 else "右脚踩稳 · 左脚可移动"
+	_text(support_text, 55, 273, 14, MINT if support >= 0 else MUTED)
+	var motion: String = "踩稳支撑脚，再移重心"
+	if game.climber.has_method("get_motion_name"):
+		motion = str(game.climber.call("get_motion_name"))
+	_wrapped("当前动作  ·  " + motion, 55, 300, 271, 14, 20, PAPER)
+	_rule(55, 329, 272)
+	_text("岩面观察", 55, 351, 12, MUTED)
+	_wrapped(game.terrain_hint(), 55, 375, 271, 14, 21, PAPER)
+
+func _draw_foot_labels(w: float, h: float) -> void:
+	if not game.climber.has_method("get_foot_position"):
+		return
+	var feet: Array[Vector2] = []
+	for i: int in range(2):
+		var foot: Vector3 = game.climber.call("get_foot_position", i)
+		if game.camera.is_position_behind(foot):
+			return
+		feet.append(game.camera.unproject_position(foot))
+	for i: int in range(2):
+		var selected: bool = int(game.selected_support) == i
+		var label: String = ("Q 左脚" if i == 0 else "E 右脚") + (" · 支撑" if selected else "")
+		var text_width: float = font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+		var screen_left: bool = feet[i].x <= feet[1 - i].x
+		var x: float = feet[i].x - text_width - 25.0 if screen_left else feet[i].x + 25.0
+		var y: float = feet[i].y + 13.0
+		var rect: Rect2 = Rect2(x - 6, y - 15, text_width + 12, 23)
+		if rect.position.x < 25 or rect.end.x > w - 110 or rect.position.y < 150 or rect.end.y > h - 206:
+			continue
+		if rect.intersects(Rect2(36, 153, 310, 302)):
+			continue
+		if game.grip_active:
+			var panel_width: float = minf(490.0, w - 410.0)
+			if rect.intersects(Rect2(w - panel_width - 130.0, h - 380.0, panel_width, 232)):
+				continue
+		var accent: Color = MINT if selected else MUTED
+		draw_line(feet[i] + Vector2(0, 3), Vector2(rect.end.x if screen_left else rect.position.x, y - 4), Color(accent, 0.58), 1.0, true)
+		_panel(rect, 0.78)
+		_text(label, x, y + 1, 12, accent)
 
 func _branch_path(first: int) -> Array[Dictionary]:
 	var path: Array[Dictionary] = []
@@ -373,18 +439,21 @@ func _skill_bar(rect: Rect2, value: float, target: float, window: float, aligned
 func _draw_grip_controls(w: float, h: float) -> void:
 	var panel_width: float = minf(490.0, w - 410.0)
 	var left: float = w - panel_width - 130.0
-	var top: float = h - 340.0
+	var top: float = h - 380.0
 	var ready: bool = game.grip_ready()
 	var power_ready: bool = absf(game.grip_power - game.grip_target) <= game.grip_window
-	var balance_ready: bool = absf(game.balance - game.balance_target) <= game.balance_window
+	var reach_ready: bool = game.grip_reach_ready()
+	var balance_ready: bool = absf(game.balance - game.balance_target) <= game.balance_window and reach_ready
 	var remaining: float = maxf(0.0, 4.5 - game.grip_time)
-	_panel(Rect2(left, top, panel_width, 192), 0.93)
+	_panel(Rect2(left, top, panel_width, 232), 0.93)
 	var hand: String = "左手" if game.grip_hand == 0 else "右手"
 	var grip_hold: Dictionary = game._hold(game.grip_id)
 	var foot: int = int(grip_hold.get("support", -1))
 	var heading: String = "双区就绪 · 现在松开" if ready else hand + " · 稳住，等待出手"
 	if foot >= 0 and game.selected_support != foot:
 		heading = "先按 " + ("Q 选左脚支撑" if foot == 0 else "E 选右脚支撑")
+	elif not reach_ready:
+		heading = "还够不到 · 先按 A / D 移重心"
 	elif str(grip_hold.get("kind", "")) == "wind" and game.wind_strength >= 0.72:
 		heading = "阵风正强 · 等待风弱"
 	_text(heading, left + 20, top + 28, 19, MINT if ready else PAPER)
@@ -394,11 +463,12 @@ func _draw_grip_controls(w: float, h: float) -> void:
 	_text("已对准" if power_ready else "等待时机", left + panel_width - 88, top + 62, 13, MINT if power_ready else GOLD)
 	_skill_bar(Rect2(left + 20, top + 76, panel_width - 40, 13), game.grip_power, game.grip_target, game.grip_window, power_ready)
 	_text("重心  /  按住 A 左移 · D 右移", left + 20, top + 116, 13, MUTED)
-	_text("已对准" if balance_ready else "调整重心", left + panel_width - 88, top + 116, 13, MINT if balance_ready else GOLD)
+	_text("已对准" if balance_ready else ("调整重心" if reach_ready else "尚未可达"), left + panel_width - 88, top + 116, 13, MINT if balance_ready else GOLD)
 	_skill_bar(Rect2(left + 20, top + 130, panel_width - 40, 13), (game.balance + 1.0) * 0.5, (game.balance_target + 1.0) * 0.5, game.balance_window * 0.5, balance_ready)
-	_text("松开%s键抓牢 · 双区都要对准" % ("左" if game.grip_hand == 0 else "右"), left + 20, top + 174, 13, MINT if ready else PAPER)
+	_text("%s · 预计消耗 %.1f 握力" % ["已在一步范围内" if reach_ready else "身体移近后才能出手", game.hold_effort(game.grip_id, game.grip_hand, 0.65)], left + 20, top + 172, 13, MINT if reach_ready else GOLD)
+	_text("松开%s键抓牢 · 可达且双区都要对准" % ("左" if game.grip_hand == 0 else "右"), left + 20, top + 211, 13, MINT if ready else PAPER)
 	if game.slip_streak > 0:
-		_text("失手 %d / 3" % game.slip_streak, left + panel_width - 92, top + 174, 12, GOLD)
+		_text("失手 %d / 3" % game.slip_streak, left + panel_width - 92, top + 211, 12, GOLD)
 
 func _draw_fall(w: float, h: float) -> void:
 	var fade: float = clampf(game.fall_time / 0.3, 0.0, 1.0)
@@ -475,9 +545,9 @@ func _draw_help(w: float, h: float) -> void:
 	_text("攀登手册  /  FIELD NOTES", left, 186, 15, GOLD)
 	_rule(left, 215, 780)
 	var rows: Array = [
-		["01", "观察路线", "W 标出建议点；中键拖拽或 Z / X 调整读线视角，先看落点与重心关系。"],
-		["02", "先落脚，再伸手", "鼠标左 / 右键选择双手；Q / E 选左 / 右支撑脚，帮助横渡。"],
-		["03", "双区就绪再松手", "按住 A / D 把重心移入绿区；蓄力白针进入绿区时松开鼠标。"],
+		["01", "读线，找到下一步", "W 标记目标；中键 / Z X 转镜头。青圈当前可达，金圈需移重心。"],
+		["02", "先选支撑脚，再移重心", "Q / E 选左 / 右脚踩稳；A / D 移近目标，侧栏和脚边标签显示支撑脚。"],
+		["03", "蹬腿伸手，双区就绪再松手", "左 / 右键按住选手；可达且双区对准后松开，角色执行正身、侧身或折膝动作。"],
 		["04", "把握 4.5 秒", "超时或未对准会失手并扣握力；连续三次失手由安全绳保护。"],
 		["05", "观察岩面与天气", "小岩点要连贯通过；湿壁可用空格镁粉防滑，阵风时等待风弱。"],
 		["06", "把路留在日志里", "金色岩点恢复握力；R 返回锚点。探索分支与观景点，抵达山顶。"]
@@ -486,7 +556,7 @@ func _draw_help(w: float, h: float) -> void:
 		var y: float = 264 + i * 75
 		_text(rows[i][0], left, y, 20, GOLD)
 		_text(rows[i][1], left + 59, y, 21)
-		_text(rows[i][2], left + 59, y + 28, 15, MUTED)
+		_wrapped(rows[i][2], left + 59, y + 28, 721, 15, 21, MUTED)
 	_text("Esc 暂停   /   M 声音   /   F11 全屏     ·     进度保存在游戏目录", left, 748, 14, MUTED)
 
 func _button(label: String, rect: Rect2, callback: Callable, primary: bool = false, locked: bool = false) -> void:

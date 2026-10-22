@@ -20,7 +20,12 @@ var falls: int = 0
 var highest: float = 0.0
 var hovered_id: int = -1
 var reachable: Array = []
+var readable: Array[int] = []
 var current_rest: bool = true
+var rest_feedback_time: float = 0.0
+var rest_feedback_stamina: float = 100.0
+var _move_voice_distance: float = 0.0
+var _move_voice_limit: float = 1.0
 var checkpoint: int = 0
 var last_hand: int = 0
 var toast: String = ""
@@ -96,6 +101,7 @@ func _ready() -> void:
 	climber.set_outfit(outfit_index)
 	climber.reached_hold.connect(_on_reached)
 	climber.fell.connect(_on_fell)
+	climber.effort_started.connect(_on_effort_started)
 	sound = AudioScript.new()
 	add_child(sound)
 	sound.start_ambience()
@@ -151,8 +157,10 @@ func _write_save() -> void:
 		file.store_string(JSON.stringify(save_data, "\t"))
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and grip_active:
-		_cancel_grip()
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		camera_orbiting = false
+		if grip_active:
+			_cancel_grip()
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		quit_game()
 
@@ -160,6 +168,7 @@ func _process(delta: float) -> void:
 	clock_time += delta
 	toast_time = maxf(0.0, toast_time - delta)
 	if mode == "playing":
+		rest_feedback_time = maxf(0.0, rest_feedback_time - delta)
 		elapsed += delta
 		chalk_protection = maxf(0.0, chalk_protection - delta)
 		wind_strength = world.get_wind_strength()
@@ -169,8 +178,11 @@ func _process(delta: float) -> void:
 		if current_rest and not climber.moving and not grip_active:
 			climber.rest(delta)
 		var lean: float = float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A))
-		if _auto_test and grip_active:
-			lean = clampf((balance_target - balance) * 8.0, -1.0, 1.0)
+		if _auto_test:
+			var aim: int = grip_id if grip_active else next_hold_id()
+			if aim >= 0:
+				var stance: float = balance_target if grip_active else balance_target_for_hold(aim, recommended_hand(aim))
+				lean = clampf((stance - balance) * 8.0, -1.0, 1.0)
 		_update_read_line_camera(delta)
 		_tick_control(delta, lean)
 		_update_reachable()
@@ -191,13 +203,23 @@ func _process(delta: float) -> void:
 	var altitude: float = clampf((climber.get_reach_origin().y - 1.0) / route_height, 0.0, 1.0)
 	world.update_atmosphere(altitude, delta if mode in ["playing", "menu", "summit"] else 0.0)
 	sound.set_altitude(altitude)
+	_sync_climbing_audio()
+	if climber.has_method("set_support_feedback_visible"):
+		climber.set_support_feedback_visible(mode == "playing" and not help_open)
 	_update_camera(delta)
 	hud.queue_redraw()
 
+func _sync_climbing_audio() -> void:
+	sound.set_climbing_state(climber.stamina, mode == "playing" and climber.climbing and not help_open, current_rest and not climber.moving and not grip_active)
+
+func _on_effort_started() -> void:
+	_sync_climbing_audio()
+	sound.play_exertion(_move_voice_distance, _move_voice_limit, climber._move_duration)
+
 func _update_camera(delta: float) -> void:
 	var body: Vector3 = climber.get_body_position()
-	var target: Vector3 = body + Vector3(1.45, 1.0, -0.4)
-	var desired: Vector3 = body + Vector3(6.0, 1.5, 10.0)
+	var target: Vector3 = body + Vector3(1.10, 0.9, -0.4)
+	var desired: Vector3 = body + Vector3(4.5, 1.4, 8.0)
 	if mode == "menu":
 		target = Vector3(-2.6, 7.0, 0.0)
 		desired = Vector3(9.0 + sin(clock_time * 0.07) * 0.8, 10.0, 22.0)
@@ -209,10 +231,10 @@ func _update_camera(delta: float) -> void:
 	else:
 		var view_angle: float = camera_yaw if mode == "playing" else 0.0
 		var view_basis: Basis = Basis(Vector3.UP, view_angle) * Basis(Vector3.RIGHT, camera_pitch if mode == "playing" else 0.0)
-		target = body + view_basis * Vector3(1.45, 1.0, -0.4)
-		desired = body + view_basis * Vector3(6.0, 1.5, 10.0)
+		target = body + view_basis * Vector3(1.10, 0.9, -0.4)
+		desired = body + view_basis * Vector3(4.5, 1.4, 8.0)
 		if current_rest and not grip_active:
-			desired += Vector3(0.6, 0.7, 1.3)
+			desired += Vector3(0.3, 0.4, 0.6)
 		desired += Vector3(sin(clock_time * 0.75) * 0.022, sin(clock_time * 1.15) * 0.025, 0.0)
 	if not _camera_ready:
 		camera.position = desired
@@ -284,12 +306,13 @@ func start_climb(resume: bool = false) -> void:
 	climber.climbing = true
 	checkpoint = start_id
 	current_rest = bool(hold.rest)
+	_sync_climbing_audio()
 	highest = float(hold.position.y)
 	chapter = mini(4, int(highest / route_height * 4.0))
 	_camera_ready = false
 	_update_reachable()
 	hud.refresh_buttons()
-	show_toast(str(active_route.name), challenge_goal_text() if play_style == "challenge" else "W 标记目标 · 中键拖拽 / Z X 读线 · A/D 稳住重心。金色可休息 · 青色绕行有岩台 · 橙色捷径需连续发力。", 7.0)
+	show_toast(str(active_route.name), challenge_goal_text() if play_style == "challenge" else "W 标记目标 · 中键 / Z X 读线。Q/E 选支撑脚 → A/D 移重心 → 按住鼠标，双绿区就绪后松开。", 7.0)
 	if resume and int(save_data.get("version", 0)) < 3:
 		show_toast("旧旅程已保留，山路已更新", "旧版锚点布局已变化，本次从营地出发；原登顶成绩仍在。", 8.0)
 
@@ -301,21 +324,22 @@ func _hold(id: int) -> Dictionary:
 
 func _update_reachable() -> void:
 	reachable.clear()
+	readable.clear()
 	var origin: Vector3 = climber.get_reach_origin()
 	var links: Array = _hold(climber.current_hold_id).get("links", [])
-	for hold: Dictionary in world.holds:
-		var p: Vector3 = hold.position
-		if int(hold.id) == climber.current_hold_id:
+	for id: int in links:
+		if origin.distance_to(Vector3(_hold(id).position)) > REACH:
 			continue
-		if int(hold.id) in links and origin.distance_to(p) <= REACH:
-			reachable.append(int(hold.id))
+		readable.append(id)
+		if bool(hold_reach_info(id, 0).reachable) or bool(hold_reach_info(id, 1).reachable):
+			reachable.append(id)
 	world.set_hold_feedback(reachable, grip_id if grip_active else (hovered_id if hovered_id >= 0 else preview_id), climber.current_hold_id)
 
 func _update_hover() -> void:
 	hovered_id = -1
 	var mouse: Vector2 = get_viewport().get_mouse_position()
 	var best: float = 44.0
-	for id: int in reachable:
+	for id: int in readable:
 		var p: Vector3 = _hold(id).position
 		if camera.is_position_behind(p):
 			continue
@@ -361,7 +385,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				select_support(0)
 			KEY_E:
 				select_support(1)
-	if event is InputEventMouseMotion and camera_orbiting:
+	if event is InputEventMouseMotion and camera_orbiting and mode == "playing" and not climber.moving and not grip_active:
 		camera_yaw = clampf(camera_yaw - event.relative.x * 0.0045, -0.68, 0.68)
 		camera_pitch = clampf(camera_pitch + event.relative.y * 0.0035, -0.28, 0.22)
 		camera_reading = true
@@ -388,8 +412,10 @@ func next_hold_id() -> int:
 	var origin: Vector3 = climber.get_reach_origin()
 	var best_score: float = INF
 	var best_id: int = -1
-	for id: int in reachable:
+	for id: int in readable:
 		var hold: Dictionary = _hold(id)
+		if not bool(hold_reach_info(id).can_adjust):
+			continue
 		var p: Vector3 = hold.position
 		if p.y < origin.y:
 			continue
@@ -411,21 +437,76 @@ func choose_next() -> void:
 func balance_hint_for_hold(id: int) -> String:
 	if id < 0:
 		return ""
+	var info: Dictionary = hold_reach_info(id, grip_hand if grip_active and grip_id == id else -1)
+	var direction: float = float(info.target_balance) - balance
+	var instruction: String = "重心已到位"
+	if absf(direction) > 0.08:
+		instruction = "A 向岩壁左侧移重心" if direction < 0.0 else "D 向岩壁右侧移重心"
+	return ("左手" if int(info.hand) == 0 else "右手") + " · " + instruction
+
+func balance_target_for_hold(id: int, hand: int) -> float:
+	# Align the chosen shoulder with the hold on the wall's horizontal axis.
+	var x: float = float(_hold(id).position.x)
+	var low: float = -0.90
+	var high: float = 0.90
+	for _iteration in range(12):
+		var middle: float = (low + high) * 0.5
+		if climber.get_shoulder_position(hand, middle).x < x:
+			low = middle
+		else:
+			high = middle
+	return (low + high) * 0.5
+
+func recommended_hand(id: int) -> int:
+	var target: Vector3 = Vector3(_hold(id).position) + Vector3(0.0, 0.0, 0.025)
+	var best_hand: int = 0
+	var best_score: float = INF
+	for hand: int in range(2):
+		var stance: float = balance_target_for_hold(id, hand)
+		var distance: float = climber.get_shoulder_position(hand, stance).distance_to(target)
+		var score: float = distance + absf(stance) * 0.04 + (0.10 if hand == _grip_hand_history else 0.0)
+		if score < best_score:
+			best_score = score
+			best_hand = hand
+	return best_hand
+
+func hold_reach_info(id: int, hand: int = -1, lean_value: float = 2.0) -> Dictionary:
+	var chosen: int = recommended_hand(id) if hand < 0 else clampi(hand, 0, 1)
+	var weight: float = balance if lean_value > 1.0 else clampf(lean_value, -1.0, 1.0)
 	var hold: Dictionary = _hold(id)
-	var origin: Vector3 = climber.get_reach_origin()
-	var span: Vector3 = Vector3(hold.position) - origin
-	var hand: int = 0 if span.x <= 0.0 else 1
-	var hand_name: String = "左手" if hand == 0 else "右手"
-	var screen_delta: float = span.x
-	if camera != null and is_instance_valid(camera):
-		var body_screen: Vector2 = camera.unproject_position(origin + Vector3(0.0, 0.12, 0.0))
-		var hold_screen: Vector2 = camera.unproject_position(Vector3(hold.position))
-		screen_delta = hold_screen.x - body_screen.x
-	var balance_name: String = "重心偏左" if screen_delta < -18.0 else ("重心偏右" if screen_delta > 18.0 else "重心居中")
-	return "%s · %s" % [hand_name, balance_name]
+	var target: Vector3 = Vector3(hold.position) + Vector3(0.0, 0.0, 0.025)
+	var shoulder: Vector3 = climber.get_shoulder_position(chosen, weight)
+	var stance: float = balance_target_for_hold(id, chosen)
+	var distance: float = shoulder.distance_to(target)
+	var required: int = int(hold.get("support", -1))
+	var supported: bool = required < 0 or selected_support == required
+	# One route edge includes several <=0.4m foot placements and a final arm reach.
+	var push_bonus: float = 0.05 if required >= 0 and supported else 0.0
+	var maximum: float = ClimberScript.ARM_REACH + ClimberScript.STEP_REACH + push_bonus
+	var best_distance: float = climber.get_shoulder_position(chosen, stance).distance_to(target)
+	return {"hand": chosen, "shoulder": shoulder, "target": target,
+		"distance": distance, "max_distance": maximum, "target_balance": stance,
+		"reachable": distance <= maximum, "can_adjust": best_distance <= maximum,
+		"support_ok": supported}
+
+func grip_reach_ready() -> bool:
+	return grip_active and bool(hold_reach_info(grip_id, grip_hand).reachable)
+
+func _refresh_grip_geometry() -> void:
+	if not grip_active:
+		return
+	var hold: Dictionary = _hold(grip_id)
+	var info: Dictionary = hold_reach_info(grip_id, grip_hand)
+	var altitude: float = clampf(float(hold.position.y) / route_height, 0.0, 1.0)
+	var long_reach: float = clampf((float(info.distance) - 1.9) / 1.0, 0.0, 1.0)
+	balance_target = float(info.target_balance)
+	balance_window = lerpf(0.30, 0.20, altitude) - long_reach * 0.025
 
 func attempt_hold(id: int, hand: int = 0) -> void:
-	if mode != "playing" or climber.moving or grip_active or _slip_cooldown > 0.0 or id not in reachable:
+	if mode != "playing" or climber.moving or grip_active or _slip_cooldown > 0.0 or id not in readable:
+		return
+	if not bool(hold_reach_info(id, hand).can_adjust):
+		show_toast("这只手还够不到", "换一只手，或先用 Q / E 选好支撑脚，再用 A / D 移重心。", 3.0)
 		return
 	camera_orbiting = false
 	grip_id = id
@@ -439,13 +520,12 @@ func attempt_hold(id: int, hand: int = 0) -> void:
 	var long_reach: float = clampf((span.length() - 1.4) / 1.6, 0.0, 1.0)
 	grip_target = 0.57 + long_reach * 0.13 + float(id % 3) * 0.035
 	grip_window = lerpf(0.16, 0.10, altitude) - long_reach * 0.015
-	balance_target = clampf(span.x * 0.48 + (-0.24 if grip_hand == 0 else 0.24) + sin(float(hold.position.y) * 0.21) * 0.16, -0.80, 0.80)
-	balance_window = lerpf(0.30, 0.20, altitude) - long_reach * 0.025
 	if climber.stamina < hold_effort(id, grip_hand, 0.0):
 		grip_id = -1
 		show_toast("这一步需要更多握力", "选择更近的岩点，或空格使用镁粉。金色岩点可以休息。", 3.0)
 		return
 	grip_active = true
+	_refresh_grip_geometry()
 	toast_time = 0.0
 	var foot: int = int(hold.get("support", -1))
 	if foot >= 0 and selected_support != foot:
@@ -462,6 +542,7 @@ func _tick_control(delta: float, axis: float) -> void:
 	var wind: float = sin(clock_time * 1.3) * (0.04 + (wind_strength * 0.55 if target_windy else 0.0))
 	balance = clampf(balance + (axis * 1.25 + (wind if grip_active else 0.0)) * delta, -1.0, 1.0)
 	climber.set_lean(balance)
+	_refresh_grip_geometry()
 	if not grip_active:
 		return
 	grip_time += delta
@@ -478,15 +559,21 @@ func grip_ready() -> bool:
 	var foot: int = int(_hold(grip_id).get("support", -1))
 	var supported: bool = foot < 0 or foot == selected_support
 	var wind_ok: bool = str(_hold(grip_id).get("kind", "")) != "wind" or wind_strength < 0.72
-	return supported and wind_ok and grip_time >= 0.2 and grip_time < 4.5 and absf(grip_power - grip_target) <= grip_window and absf(balance - balance_target) <= balance_window
+	return supported and wind_ok and grip_reach_ready() and grip_time >= 0.2 and grip_time < 4.5 and absf(grip_power - grip_target) <= grip_window and absf(balance - balance_target) <= balance_window
 
 func hold_effort(id: int, hand: int, quality: float) -> float:
 	var span: Vector3 = Vector3(_hold(id).position) - climber.get_reach_origin()
+	var info: Dictionary = hold_reach_info(id, hand)
 	var cross_body: bool = (hand == 0 and span.x > 0.55) or (hand == 1 and span.x < -0.55)
 	var repeat_cost: float = 1.5 if hand == _grip_hand_history else 0.0
 	var kind: String = str(_hold(id).get("kind", "normal"))
 	var terrain_cost: float = 0.3 if kind == "small" else (4.0 if kind == "wet" and chalk_protection <= 0.0 else 0.0)
-	return terrain_cost + 4.0 + span.length() * 2.2 + (2.5 if cross_body else 0.0) + repeat_cost + (1.0 - clampf(quality, 0.0, 1.0)) * 3.0
+	# Authored step cost is the baseline; actual shoulder motion adds or saves effort.
+	var neutral_distance: float = climber.get_shoulder_position(hand, 0.0).distance_to(Vector3(info.target))
+	var extension: float = maxf(0.0, span.length() + float(info.distance) - neutral_distance)
+	var alignment: float = 1.0 - clampf(absf(balance - float(info.target_balance)) / 0.60, 0.0, 1.0)
+	var leg_assist: float = alignment * 0.45 if bool(info.support_ok) else 0.0
+	return terrain_cost + 4.0 + extension * 2.2 + (2.5 if cross_body else 0.0) + repeat_cost + (1.0 - clampf(quality, 0.0, 1.0)) * 3.0 - leg_assist
 
 func _release_grip(hand: int) -> void:
 	if mode != "playing" or not grip_active or hand != grip_hand:
@@ -499,6 +586,9 @@ func _release_grip(hand: int) -> void:
 		if str(_hold(grip_id).get("kind", "")) == "wind" and wind_strength >= 0.72:
 			_fail_grip("阵风正强，先等待飘带落下再出手")
 			return
+		if not grip_reach_ready():
+			_fail_grip("身体还没移到位，手还够不到岩点")
+			return
 		_fail_grip("重心没有稳住" if absf(balance - balance_target) > balance_window else "松手时机不对")
 		return
 	var power_error: float = absf(grip_power - grip_target) / grip_window
@@ -506,12 +596,17 @@ func _release_grip(hand: int) -> void:
 	last_quality = clampf(1.0 - power_error * 0.55 - weight_error * 0.45, 0.0, 1.0)
 	var id: int = grip_id
 	var effort: float = hold_effort(id, hand, last_quality)
+	var reach_info: Dictionary = hold_reach_info(id, hand)
 	_cancel_grip()
 	climber.set_support_foot(selected_support)
 	if climber.climb_to(_hold(id), hand, effort):
 		precise_streak = precise_streak + 1 if last_quality >= 0.65 else 0
 		best_precise_streak = maxi(best_precise_streak, precise_streak)
 		current_rest = false
+		rest_feedback_time = 0.0
+		_move_voice_distance = float(reach_info.distance)
+		_move_voice_limit = float(reach_info.max_distance)
+		_sync_climbing_audio()
 		last_hand = hand
 		_grip_hand_history = hand
 		slip_streak = 0
@@ -567,16 +662,27 @@ func _reset_controls() -> void:
 	chalk_protection = 0.0
 	selected_support = -1
 	climber.set_support_foot(-1)
+	climber.set_lean(0.0)
 	climber.terrain_drain = 0.0
 	slip_streak = 0
 	preview_id = -1
 	last_quality = 0.0
 	_grip_hand_history = -1
 	_slip_cooldown = 0.0
+	rest_feedback_time = 0.0
+	_move_voice_distance = 0.0
 
 func _on_reached(id: int) -> void:
 	var hold: Dictionary = _hold(id)
+	balance = 0.0
+	climber.set_lean(0.0)
 	current_rest = bool(hold.rest)
+	_sync_climbing_audio()
+	# Keep recovery feedback in the grip meter, even if a discovery replaces the toast.
+	if current_rest and id > 0 and id < world.holds.size() - 1 and not visited.has(id):
+		rest_feedback_time = 4.0
+		rest_feedback_stamina = climber.stamina
+		sound.play_recovery(bool(hold.checkpoint))
 	highest = maxf(highest, float(hold.position.y))
 	if bool(hold.checkpoint):
 		chalk_charges = chalk_capacity()
@@ -586,11 +692,10 @@ func _on_reached(id: int) -> void:
 		climber.checkpoint_position = hold.position
 		climber.checkpoint_hold_id = id
 		if not visited.has(id):
-			sound.play_checkpoint()
 			show_toast("安全锚点 · 已抵达", "留在这里喘口气，握力会自动恢复。" + ("进度已保存。" if play_style == "journey" else "绳索已固定。"), 4.5)
 		_save_progress()
 	elif current_rest and not visited.has(id):
-		show_toast("找到了休息点", "放松双肩。停留即可恢复握力。", 3.2)
+		show_toast("踩稳了，歇一口气", "这一段完成了。放松双肩，握力正在恢复。", 3.2)
 	visited[id] = true
 	var found: String = str(hold.get("collectible", ""))
 	if not found.is_empty() and found not in run_collections:
@@ -623,6 +728,7 @@ func _on_fell(reason: String = "") -> void:
 		fall_reason = "握力耗尽，安全绳接住了你。小抓点不宜久留，可改走有岩台的绕行。"
 	_cancel_grip()
 	mode = "fallen"
+	rest_feedback_time = 0.0
 	toast_time = 0.0
 	climber.process_mode = Node.PROCESS_MODE_DISABLED
 	sound.play_fall()
@@ -642,6 +748,7 @@ func retry_after_fall() -> void:
 	climber.process_mode = Node.PROCESS_MODE_INHERIT
 	current_rest = true
 	mode = "playing"
+	_sync_climbing_audio()
 	_camera_ready = false
 	_update_reachable()
 	hud.refresh_buttons()
@@ -665,6 +772,7 @@ func _finish() -> void:
 	if mode == "summit":
 		return
 	_cancel_grip()
+	rest_feedback_time = 0.0
 	mode = "summit"
 	summit_time = 0.0
 	_summit_buttons_ready = false
@@ -730,6 +838,7 @@ func toggle_pause() -> void:
 	elif mode == "paused":
 		mode = "playing"
 		climber.process_mode = Node.PROCESS_MODE_INHERIT
+	_sync_climbing_audio()
 	hud.refresh_buttons()
 
 func return_menu() -> void:
@@ -752,6 +861,7 @@ func toggle_audio() -> void:
 
 func toggle_help() -> void:
 	help_open = not help_open
+	_sync_climbing_audio()
 	hud.refresh_buttons()
 
 func quit_game() -> void:
@@ -796,7 +906,7 @@ func _run_qa(delta: float) -> void:
 			select_support(int(_hold(id).get("support", -1)))
 			if str(_hold(id).get("kind", "")) == "wind" and wind_strength > 0.40:
 				return
-			var hand: int = 0 if Vector3(_hold(id).position).x < climber.get_reach_origin().x else 1
+			var hand: int = recommended_hand(id)
 			attempt_hold(id, hand)
 		_qa_idle = 0.0
 
@@ -869,6 +979,8 @@ func select_support(index: int) -> void:
 		return
 	selected_support = clampi(index, -1, 1)
 	climber.set_support_foot(selected_support)
+	_refresh_grip_geometry()
+	_update_reachable()
 
 func chalk_capacity() -> int:
 	return 2 if play_style == "extreme" else 3

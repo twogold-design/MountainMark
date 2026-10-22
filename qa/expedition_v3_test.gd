@@ -102,6 +102,14 @@ func prepare(id: int, hand: int) -> bool:
 
 func move(id: int, hand: int) -> bool:
 	game.select_support(int(game._hold(id).get("support", -1)))
+	# Read the line and shift with real A/D input before spending grip-preparation time.
+	# Weight now starts neutral after each move and changes actual shoulder reach.
+	var stance: float = game.balance_target_for_hold(id, hand)
+	for align_step in range(200):
+		if absf(game.balance - stance) < 0.025:
+			break
+		tick(0.01, clampf((stance - game.balance) * 14.0, -1.0, 1.0))
+	game._update_reachable()
 	# Observe the real gust cycle before starting a wind-exposed move.
 	if str(game._hold(id).kind) == "wind":
 		for wait_step in range(1800):

@@ -28,13 +28,13 @@ func _run() -> void:
 			actor.set_support_foot(chosen)
 			var hand: int = 0 if direction < 0 else 1
 			verify(actor.climb_to({"id": 1, "position": Vector3(direction * 1.1, 2.8, 0.45)}, hand, 6.0), "Traverse starts")
-			var first_foot: int = hand if chosen < 0 else chosen
+			var first_foot: int = hand if chosen < 0 else 1 - chosen
 			var fixed_hand: Vector3 = actor._hands[hand]
 			var fixed_foot: Vector3 = actor._feet[1 - first_foot]
 			actor._process(0.20 * actor._move_duration / float(actor._step_count))
 			verify(actor._hands[hand].is_equal_approx(fixed_hand), "Hand waits for foot plant")
 			verify(actor._feet[1 - first_foot].is_equal_approx(fixed_foot), "Other foot stays planted")
-			verify(not actor._feet[first_foot].is_equal_approx(actor._old_feet[first_foot]), "Selected foot steps first")
+			verify(not actor._feet[first_foot].is_equal_approx(actor._old_feet[first_foot]), "Free foot steps first while selected foot supports")
 			actor.set_support_foot(1 - first_foot)
 			verify(actor._move_support_foot == chosen, "Midmove selection cannot change pose")
 			while actor.moving:

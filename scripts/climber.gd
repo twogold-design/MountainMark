@@ -2,11 +2,28 @@ extends Node3D
 
 signal reached_hold(hold_id: int)
 signal fell
+signal effort_started
+const ARM_REACH: float = 0.715
+const STEP_REACH: float = 2.10
+const LEAN_SHIFT: float = 0.32
+const SEARCH_CHANCE: float = 0.08
+var _motion_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var _searching_move: bool = false
+var _previous_searching_move: bool = false
 var stamina: float = 100.0
 var terrain_drain: float = 0.0
 var support_foot: int = -1
 var _move_support_foot: int = -1
 var _traverse: bool = false
+var _motion: String = "front"
+var _motion_direction: float = 1.0
+var _motion_turn: float = 0.0
+var _motion_crouch: float = 0.0
+var _motion_roll: float = 0.0
+var _stance_weight: float = 0.0
+var _support_feedback_visible: bool = true
+var _support_marker: MeshInstance3D
+var _support_material: StandardMaterial3D
 var _outfit_index: int = 0
 var _jacket_material: StandardMaterial3D
 var _pack_material: StandardMaterial3D
@@ -34,6 +51,8 @@ var _target: Dictionary = {}
 var _hand: int = 0
 var _last_hand: int = 1
 var _move_time: float = 0.0
+var _effort_sent: bool = false
+var _move_start_lean: float = 0.0
 var _move_duration: float = 0.90
 var _step_count: int = 1
 var _time: float = 0.0
@@ -58,6 +77,9 @@ var _knees: Array[MeshInstance3D] = []
 var _rope: Array[MeshInstance3D] = []
 var _dust: Array[MeshInstance3D] = []
 
+func _init() -> void:
+	_motion_rng.randomize()
+
 func setup(start_hold: Dictionary) -> void:
 	if not _built:
 		_build_avatar()
@@ -77,10 +99,14 @@ func climb_to(hold: Dictionary, hand: int = -1, effort: float = 4.0) -> bool:
 	_hand = 1 - _last_hand if hand < 0 else clampi(hand, 0, 1)
 	_last_hand = _hand
 	_old_body = _body
-	_old_hands = _hands.duplicate()
-	_old_feet = _feet.duplicate()
+	# Start from the rendered contacts, including the raised free foot in a stance.
+	for i in range(2):
+		_old_hands[i] = _gloves[i].position
+		_old_feet[i] = _boots[i].position - Vector3(0, -0.015, -0.045)
+	_hands = _old_hands.duplicate()
+	_feet = _old_feet.duplicate()
 	var side: float = -1.0 if _hand == 0 else 1.0
-	_new_body = target + Vector3(-side * 0.14, -0.78, 0.49)
+	_new_body = target + Vector3(-side * 0.14, -0.72, 0.49)
 	_new_hands[_hand] = target + Vector3(0, 0, 0.025)
 	_new_hands[1 - _hand] = target + Vector3(-side * 0.48, -0.32, 0.01)
 	_new_feet[0] = _new_body + Vector3(-0.19, -0.92, -0.28)
@@ -88,11 +114,20 @@ func climb_to(hold: Dictionary, hand: int = -1, effort: float = 4.0) -> bool:
 	_step_count = maxi(1, ceili(_old_body.distance_to(_new_body) / 0.40))
 	var displacement: Vector3 = _new_body - _old_body
 	_traverse = absf(displacement.x) > 0.45 and absf(displacement.x) > absf(displacement.y) * 0.55
+	_motion = "side" if _traverse else ("high_step" if displacement.y > 1.55 else "front")
+	_motion_direction = signf(displacement.x) if absf(displacement.x) > 0.12 else side
+	# A little uncertainty is a cosmetic variation, never the default climbing gait.
+	_searching_move = total_moves > 0 and not _previous_searching_move and _motion_rng.randf() < SEARCH_CHANCE
+	_previous_searching_move = _searching_move
 	_move_support_foot = support_foot
 	_move_duration = maxf(0.90, float(_step_count) * 0.42)
 	if _traverse:
 		_move_duration += 0.20
+	elif _motion == "high_step":
+		_move_duration += 0.18
 	_move_time = 0.0
+	_effort_sent = false
+	_move_start_lean = _lean
 	moving = true
 	stamina = maxf(0.0, stamina - move_cost)
 	return true
@@ -101,7 +136,39 @@ func get_reach_origin() -> Vector3:
 	return _reach
 
 func get_body_position() -> Vector3:
-	return _body
+	return body_transform_at(_lean).origin
+
+func get_motion_name() -> String:
+	if summit_mode:
+		return "翻越山顶"
+	if moving:
+		if _searching_move:
+			return "探点落手"
+		return {"front": "正身蹬起", "side": "侧身横渡", "high_step": "折膝高踩"}.get(_motion, "正身蹬起")
+	return "正身待发" if support_foot < 0 else ("左脚踩稳" if support_foot == 0 else "右脚踩稳")
+
+func get_foot_position(index: int) -> Vector3:
+	return _boots[clampi(index, 0, 1)].global_position if _built else Vector3.ZERO
+
+func get_support_position() -> Vector3:
+	var foot: int = _move_support_foot if moving else support_foot
+	return get_foot_position(foot) if foot >= 0 else get_body_position()
+
+func set_support_feedback_visible(value: bool) -> void:
+	_support_feedback_visible = value
+	_update_support_marker()
+
+func body_transform_at(lean_value: float) -> Transform3D:
+	var weight: float = clampf(lean_value, -1.0, 1.0)
+	var foot: int = _move_support_foot if moving else support_foot
+	var support_shift: float = (-0.045 if foot == 0 else 0.045) if foot >= 0 else 0.0
+	var position: Vector3 = _body + Vector3(weight * LEAN_SHIFT + support_shift, -absf(weight) * 0.025 - _motion_crouch, -absf(weight) * 0.055)
+	var turn: float = weight * -0.14 + _motion_roll
+	return Transform3D(Basis(Vector3.UP, _motion_turn) * Basis(Vector3.BACK, turn), position)
+
+func get_shoulder_position(hand: int, lean_value: float = 2.0) -> Vector3:
+	var side: float = -1.0 if hand == 0 else 1.0
+	return body_transform_at(_lean if lean_value > 1.0 else lean_value) * Vector3(side * 0.225, 0.22, -0.02)
 
 func rest(delta: float) -> void:
 	if not moving:
@@ -119,7 +186,7 @@ func chalk() -> bool:
 func recover() -> void:
 	_reach = checkpoint_position
 	current_hold_id = checkpoint_hold_id
-	_body = _reach + Vector3(0.10, -0.78, 0.49)
+	_body = _reach + Vector3(0.10, -0.72, 0.49)
 	_hands[0] = _reach + Vector3(-0.13, -0.08, 0.02)
 	_hands[1] = _reach + Vector3(0.13, -0.04, 0.02)
 	_feet[0] = _body + Vector3(-0.19, -0.92, -0.28)
@@ -132,6 +199,11 @@ func recover() -> void:
 	_chalk_cooldown = 0.0
 	_summit_time = 0.0
 	_move_time = 0.0
+	_searching_move = false
+	_motion_turn = 0.0
+	_motion_crouch = 0.0
+	_motion_roll = 0.0
+	_stance_weight = 1.0 if support_foot >= 0 else 0.0
 	_lean = 0.0
 	_lean_target = 0.0
 	_target.clear()
@@ -143,6 +215,9 @@ func recover() -> void:
 func celebrate(summit_position: Vector3 = Vector3.ZERO) -> void:
 	moving = false
 	summit_mode = true
+	_motion_turn = 0.0
+	_motion_crouch = 0.0
+	_motion_roll = 0.0
 	_summit_floor = summit_position if summit_position != Vector3.ZERO else _reach + Vector3(0, 1.95, -1.25)
 	_summit_time = 0.0
 	_chalk_time = 0.0
@@ -155,10 +230,18 @@ func celebrate(summit_position: Vector3 = Vector3.ZERO) -> void:
 
 func set_lean(value: float) -> void:
 	_lean_target = clampf(value, -1.0, 1.0)
+	# Input already moves continuously. Rendering and reach must use the same pose.
+	_lean = _lean_target
+	if _built:
+		_update_pose()
 
 func set_support_foot(index: int) -> void:
 	# Snapshot on climb_to so changing the next foothold cannot pop an active pose.
 	support_foot = clampi(index, -1, 1)
+	if not moving:
+		_stance_weight = 1.0 if support_foot >= 0 else 0.0
+	if _built:
+		_update_pose()
 
 func set_outfit(index: int) -> void:
 	_outfit_index = clampi(index, 0, 2)
@@ -175,7 +258,6 @@ func _process(delta: float) -> void:
 	if not _built:
 		return
 	_time += delta
-	_lean = lerpf(_lean, _lean_target, minf(1.0, delta * 6.0))
 	_chalk_cooldown = maxf(0.0, _chalk_cooldown - delta)
 	_chalk_time = maxf(0.0, _chalk_time - delta)
 	if summit_mode:
@@ -198,42 +280,70 @@ func _process(delta: float) -> void:
 	elif moving:
 		_advance_move(delta)
 	elif climbing:
+		_stance_weight = move_toward(_stance_weight, 1.0 if support_foot >= 0 else 0.0, delta * 5.0)
 		stamina = maxf(0.0, stamina - delta * (0.38 + maxf(0.0, terrain_drain)))
 		if stamina <= 0.0 and not _fall_sent:
 			_fall_sent = true
 			fell.emit()
 	_update_pose()
 
+func _reach_progress(p: float, start: float, finish: float) -> float:
+	if not _searching_move:
+		return smoothstep(start, finish, p)
+	# One brief check in the middle, with eased entry/exit and unchanged total time.
+	var pause_start: float = 0.48
+	var pause_end: float = pause_start + 0.10 / _move_duration
+	return 0.5 * smoothstep(start, pause_start, p) + 0.5 * smoothstep(pause_end, finish, p)
+
 func _advance_move(delta: float) -> void:
 	_move_time += delta
 	var p: float = clampf(_move_time / _move_duration, 0.0, 1.0)
-	# A long reach is a sequence of short foot placements, not a simultaneous swim.
+	# Settle over the new footholds smoothly instead of snapping the torso at arrival.
+	_lean = lerpf(_move_start_lean, 0.0, smoothstep(0.55, 0.88, p))
+	_lean_target = _lean
+	# Feet may find several purchases; the body and each arm make one full sweep.
 	var step_index: int = mini(int(p * float(_step_count)), _step_count - 1)
 	var phase: float = clampf(p * float(_step_count) - float(step_index), 0.0, 1.0)
 	var start_fraction: float = float(step_index) / float(_step_count)
 	var end_fraction: float = float(step_index + 1) / float(_step_count)
-	var body_push: float = smoothstep(0.22, 0.80, phase)
-	var body_fraction: float = lerpf(start_fraction, end_fraction, body_push)
+	var plant: float = 0.30 / float(_step_count)
+	if not _effort_sent and p >= plant:
+		_effort_sent = true
+		effort_started.emit()
+	var body_fraction: float = _reach_progress(p, plant, 0.90)
 	_body = _old_body.lerp(_new_body, body_fraction)
-	_body.z += sin(phase * PI) * 0.025
-	var lead_foot: int = (_hand + step_index) % 2
-	if _move_support_foot >= 0:
-		lead_foot = (_move_support_foot + step_index) % 2
+	var turn_envelope: float = smoothstep(plant, maxf(0.28, plant + 0.10), p) * (1.0 - smoothstep(0.64, 0.88, p))
+	var fold: float = sin(smoothstep(plant, 0.80, p) * PI)
+	_motion_turn = _motion_direction * (0.62 if _motion == "side" else (0.20 if _motion == "high_step" else 0.06)) * turn_envelope
+	_motion_crouch = fold * (0.085 if _motion == "high_step" else 0.025)
+	_motion_roll = _motion_direction * (0.09 if _motion == "side" else 0.025) * sin(body_fraction * PI) * turn_envelope
+	_body.z += sin(body_fraction * PI) * (0.045 if _motion == "high_step" else 0.025)
+	var loaded_foot: int = _move_support_foot if _move_support_foot >= 0 else (1 - _hand + step_index) % 2
+	var free_foot: int = 1 - loaded_foot
 	for i in range(2):
 		var start_foot: Vector3 = _old_feet[i].lerp(_new_feet[i], start_fraction)
 		var end_foot: Vector3 = _old_feet[i].lerp(_new_feet[i], end_fraction)
-		# Lead foot lands before the push; support foot stays fixed through its first half.
-		var fp: float = smoothstep(0.0, 0.26, phase) if i == lead_foot else smoothstep(0.44, 0.96, phase)
+		# Keep the chosen support planted until the free foot is down and the push begins.
+		# Transfer weight before advancing the old support, so its leg cannot overextend.
+		var fp: float = smoothstep(0.02, 0.28, phase) if i == free_foot else smoothstep(0.50, 0.98, phase)
 		_feet[i] = start_foot.lerp(end_foot, fp)
-		_feet[i].y += sin(fp * PI) * 0.075
-		_feet[i].z += sin(fp * PI) * 0.035
-		# Traverse: place the selected foot, push the body, then extend the hand.
-		var reach_delay: float = 0.34 / float(_step_count) if _traverse else 0.0
-		var hp: float = smoothstep(reach_delay, 0.86 if _traverse else 0.76, p) if i == _hand else smoothstep(maxf(0.24, reach_delay), 0.98, p)
+		var lift: float = (0.22 if _motion == "high_step" else (0.13 if _motion == "side" else 0.095)) if i == free_foot else 0.055
+		_feet[i].y += sin(fp * PI) * lift
+		_feet[i].z += sin(fp * PI) * 0.045
+		# Leading hand reaches once, trailing hand follows. Lift off the rock instead
+		# of sliding along it; settle both palms before the action is complete.
+		var hp: float = _reach_progress(p, plant + (0.015 if i == _hand else 0.065), 0.88 if i == _hand else 0.94)
 		_hands[i] = _old_hands[i].lerp(_new_hands[i], hp)
-		_hands[i].z += sin(hp * PI) * 0.12
+		_hands[i].z += sin(hp * PI) * (0.10 if i == _hand else 0.08)
+		if _searching_move and i == _hand:
+			var check_phase: float = smoothstep(0.48, 0.48 + 0.10 / _move_duration, p)
+			_hands[i].x += _motion_direction * sin(check_phase * TAU) * 0.018
 	if p >= 1.0:
 		moving = false
+		_motion_turn = 0.0
+		_motion_crouch = 0.0
+		_motion_roll = 0.0
+		_stance_weight = 0.0
 		_body = _new_body
 		_reach = _target.get("position", _reach)
 		current_hold_id = int(_target.get("id", current_hold_id))
@@ -244,16 +354,17 @@ func _advance_move(delta: float) -> void:
 		reached_hold.emit(current_hold_id)
 
 func _update_pose() -> void:
-	var visual_body: Vector3 = _body + Vector3(_lean * 0.17, sin(_time * 2.3) * 0.009, -absf(_lean) * 0.018)
-	_torso.position = visual_body
-	_torso.rotation.z = _lean * -0.14 + (sin(_move_time * 7.0) * 0.035 if moving else 0.0)
+	_torso.transform = body_transform_at(_lean)
+	var visual_body: Vector3 = _torso.position
 	_head.rotation.y = sin(_time * 0.5) * 0.07
 	for i in range(2):
 		var side: float = -1.0 if i == 0 else 1.0
-		var shoulder: Vector3 = _torso.transform * Vector3(side * 0.225, 0.22, -0.02)
+		var shoulder: Vector3 = get_shoulder_position(i)
 		var palm: Vector3 = _hands[i]
 		if _chalk_time > 0.0 and i == 1:
 			palm = palm.lerp(visual_body + Vector3(0.30, -0.24, 0.30), sin((1.0 - _chalk_time / 0.95) * PI))
+		# Keep the continuous reach inside the same physical arm length as idle poses.
+		palm = shoulder + (palm - shoulder).limit_length(ARM_REACH)
 		var elbow: Vector3 = _joint(shoulder, palm, 0.34, 0.38, Vector3(side * 0.75, -0.45, 0.5))
 		_segment(_upper_arms[i], shoulder, elbow)
 		_segment(_forearms[i], elbow, palm)
@@ -261,7 +372,11 @@ func _update_pose() -> void:
 		_gloves[i].position = palm
 		_gloves[i].rotation.z = side * -0.25
 		var hip: Vector3 = _torso.transform * Vector3(side * 0.13, -0.29, 0)
-		var foot_delta: Vector3 = _feet[i] - hip
+		var foot: Vector3 = _feet[i]
+		if not moving and not summit_mode and climbing and support_foot >= 0 and i != support_foot:
+			# A bent free leg makes the selected, loaded leg visible before any move.
+			foot += Vector3(-side * 0.055, 0.245, 0.055) * _stance_weight
+		var foot_delta: Vector3 = foot - hip
 		var ankle: Vector3 = hip + foot_delta.normalized() * clampf(foot_delta.length(), 0.04, 0.865)
 		var knee: Vector3 = _joint(hip, ankle, 0.43, 0.44, Vector3(side * 0.035, 0.0, -1.0))
 		_segment(_thighs[i], hip, knee)
@@ -269,12 +384,26 @@ func _update_pose() -> void:
 		_knees[i].position = knee
 		_boots[i].position = ankle + Vector3(0, -0.015, -0.045)
 		_boots[i].rotation.y = -side * 0.04
+	_update_support_marker()
 	_update_rope(visual_body + Vector3(0.04, -0.27, 0.14))
 	for i in range(_dust.size()):
 		_dust[i].visible = _chalk_time > 0.0
 		var phase: float = 1.0 - _chalk_time / 0.95
 		_dust[i].position = visual_body + Vector3(0.22 + sin(float(i) * 5.7) * phase * 0.32, -0.14 + cos(float(i) * 3.2) * phase * 0.24, 0.3 + phase * float(i) * 0.025)
 		_dust[i].scale = Vector3.ONE * maxf(0.01, sin(phase * PI))
+
+func _update_support_marker() -> void:
+	if _support_marker == null:
+		return
+	var foot: int = _move_support_foot if moving else support_foot
+	_support_marker.visible = _support_feedback_visible and climbing and not summit_mode and foot >= 0 and process_mode != Node.PROCESS_MODE_DISABLED
+	if not _support_marker.visible:
+		return
+	_support_marker.position = _boots[foot].position + Vector3(0, -0.015, 0.085)
+	_support_marker.scale = Vector3.ONE * (1.0 + sin(_time * 3.0) * 0.045)
+	var color: Color = Color("f1c675") if foot == 0 else Color("78ded5")
+	_support_material.albedo_color = color
+	_support_material.emission = color
 
 func _joint(start: Vector3, target: Vector3, upper: float, lower: float, bend: Vector3) -> Vector3:
 	var difference: Vector3 = target - start
@@ -468,6 +597,19 @@ func _build_avatar() -> void:
 		_sphere(boot, 0.081, Vector3(1.0, 0.24, 0.96), rubber, Vector3(0, -0.039, -0.004))
 		var laces: Array[PackedVector3Array] = [PackedVector3Array([Vector3(-0.032, 0.045, -0.048), Vector3(0.032, 0.045, -0.025), Vector3(-0.032, 0.045, -0.005), Vector3(0.032, 0.043, 0.018)])]
 		_seams(boot, laces, strap_material, 0.003)
+	_support_material = _mat("78ded5")
+	_support_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_support_material.emission_enabled = true
+	_support_material.emission_energy_multiplier = 0.65
+	var support_ring := TorusMesh.new()
+	support_ring.inner_radius = 0.105
+	support_ring.outer_radius = 0.125
+	support_ring.rings = 24
+	support_ring.ring_segments = 8
+	_support_marker = _mesh(self, support_ring, _support_material)
+	_support_marker.name = "LoadedFootRing"
+	_support_marker.rotation.x = PI * 0.5
+	_support_marker.visible = false
 	for i in range(16):
 		_rope.append(_bone(self, 0.011, rope_material))
 	var chalk_material: StandardMaterial3D = _mat("e4dfcc")
