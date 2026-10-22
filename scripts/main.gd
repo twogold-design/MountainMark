@@ -102,6 +102,7 @@ func _ready() -> void:
 	climber.reached_hold.connect(_on_reached)
 	climber.fell.connect(_on_fell)
 	climber.effort_started.connect(_on_effort_started)
+	climber.hand_contact.connect(_on_hand_contact)
 	sound = AudioScript.new()
 	add_child(sound)
 	sound.start_ambience()
@@ -215,6 +216,12 @@ func _sync_climbing_audio() -> void:
 func _on_effort_started() -> void:
 	_sync_climbing_audio()
 	sound.play_exertion(_move_voice_distance, _move_voice_limit, climber._move_duration)
+
+func _on_hand_contact(_hold_id: int, _hand: int, kind: String) -> void:
+	if mode != "playing" or help_open:
+		return
+	_sync_climbing_audio()
+	sound.play_grip(kind)
 
 func _update_camera(delta: float) -> void:
 	var body: Vector3 = climber.get_body_position()
@@ -442,7 +449,10 @@ func balance_hint_for_hold(id: int) -> String:
 	var instruction: String = "重心已到位"
 	if absf(direction) > 0.08:
 		instruction = "A 向岩壁左侧移重心" if direction < 0.0 else "D 向岩壁右侧移重心"
-	return ("左手" if int(info.hand) == 0 else "右手") + " · " + instruction
+	var hint: String = ("左手" if int(info.hand) == 0 else "右手") + " · " + instruction
+	if bool(info.get("drop_knee", false)):
+		hint += " · 同侧脚转髋，折膝侧伸"
+	return hint
 
 func balance_target_for_hold(id: int, hand: int) -> float:
 	# Align the chosen shoulder with the hold on the wall's horizontal axis.
@@ -480,14 +490,14 @@ func hold_reach_info(id: int, hand: int = -1, lean_value: float = 2.0) -> Dictio
 	var distance: float = shoulder.distance_to(target)
 	var required: int = int(hold.get("support", -1))
 	var supported: bool = required < 0 or selected_support == required
-	# One route edge includes several <=0.4m foot placements and a final arm reach.
+	# One route edge includes coordinated footwork, a body push and a final reach.
 	var push_bonus: float = 0.05 if required >= 0 and supported else 0.0
 	var maximum: float = ClimberScript.ARM_REACH + ClimberScript.STEP_REACH + push_bonus
 	var best_distance: float = climber.get_shoulder_position(chosen, stance).distance_to(target)
 	return {"hand": chosen, "shoulder": shoulder, "target": target,
 		"distance": distance, "max_distance": maximum, "target_balance": stance,
 		"reachable": distance <= maximum, "can_adjust": best_distance <= maximum,
-		"support_ok": supported}
+		"support_ok": supported, "drop_knee": climber.can_drop_knee(Vector3(hold.position), chosen)}
 
 func grip_reach_ready() -> bool:
 	return grip_active and bool(hold_reach_info(grip_id, grip_hand).reachable)
@@ -610,7 +620,6 @@ func _release_grip(hand: int) -> void:
 		last_hand = hand
 		_grip_hand_history = hand
 		slip_streak = 0
-		sound.play_grip()
 		show_toast("稳稳抓住" if last_quality > 0.65 else "抓住了，再稳一点", "本次握力消耗 %.1f · 远点、跨手和连续同手更费力。" % effort, 1.7)
 	else:
 		show_toast("握力不足以拉起身体", "空格使用镁粉，或 R 返回安全锚点。", 2.5)
@@ -997,6 +1006,9 @@ func terrain_hint() -> String:
 	if id < 0:
 		id = climber.current_hold_id
 	var hold: Dictionary = _hold(id)
+	var chosen: int = grip_hand if grip_active else recommended_hand(id)
+	if climber.can_drop_knee(Vector3(hold.position), chosen):
+		return "折膝侧伸 · 同侧脚踩稳，向目标侧转髋贴墙，再用同侧手伸向岩点"
 	var foot: int = int(hold.get("support", -1))
 	if foot >= 0:
 		return "横渡 · 先按 " + ("Q 选左脚支撑" if foot == 0 else "E 选右脚支撑") + "，再移重心、伸手"
