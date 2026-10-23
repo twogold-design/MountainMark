@@ -28,9 +28,9 @@ func run() -> void:
 		game.sound.shutdown()
 		quit(1)
 		return
-	game.save_data = {}
-	game.play_style = "challenge"
-	game.challenge_index = 1
+	game.save_data = {"completed_routes":{"0":true}}
+	game.route_index = 1
+	game.play_style = "journey"
 	game.start_climb(false)
 	game.select_support(0)
 	var left_pose: Vector3 = game.climber.get_body_position()
@@ -56,9 +56,9 @@ func run() -> void:
 			break
 		game.climber._process(0.01)
 	verify(game.climber.current_hold_id == id, "packaged movement arrives at the selected hold")
-	var targets: Array[Vector3] = [Vector3(0.15, 3.5, 0.45), Vector3(-1.1, 2.85, 0.45), Vector3(0.2, 4.6, 0.45)]
-	var names: Array[String] = ["正身蹬起", "侧身横渡", "折膝高踩"]
-	for style: int in range(3):
+	var targets: Array[Vector3] = [Vector3(0.15, 3.5, 0.45), Vector3(0.15, 4.2, 0.45), Vector3(-1.1, 2.85, 0.45), Vector3(0.2, 4.6, 0.45)]
+	var names: Array[String] = ["近点引体", "踩点蹬伸", "侧身横渡", "远点跃抓"]
+	for style: int in range(4):
 		game.climber.setup({"id": 0, "position": Vector3(0.0, 2.5, 0.45)})
 		game.climber.climbing = true
 		game.climber.set_support_foot(0)

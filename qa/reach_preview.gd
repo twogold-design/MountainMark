@@ -34,9 +34,9 @@ func run() -> void:
 	root.add_child(game)
 	game.set_process(false)
 	game.climber.set_process(false)
-	game.save_data = {}
-	game.play_style = "challenge"
-	game.challenge_index = 1
+	game.save_data = {"completed_routes":{"0":true}}
+	game.route_index = 1
+	game.play_style = "journey"
 	game.start_climb(false)
 	game._update_camera(1.0)
 	game.choose_next()

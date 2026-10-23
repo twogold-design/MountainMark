@@ -17,18 +17,17 @@ func run() -> void:
 		root.add_child(game)
 		game._save_path = "res://.runtime/scenery-camera-save.json"
 		game.save_data = {"completed_routes": {"0": true, "1": true, "2": true}}
-		game.route_index = mini(index, 2)
-		game.play_style = "journey" if index < 3 else "challenge"
-		game.challenge_index = maxi(0, index - 3)
+		game.route_index = index % 3
+		game.play_style = "journey" if index < 3 else "extreme"
 		game.start_climb(false)
-		var expected: Dictionary = load("res://scripts/routes.gd").build(game.route_index, game.play_style, game.challenge_index)
+		var expected: Dictionary = load("res://scripts/routes.gd").build(game.route_index, game.play_style)
 		assert(game.world.holds == expected.holds)
 		assert(is_equal_approx(game.world.get_summit_position().y, game.route_height + 2.0))
 		game.set_process(false)
 		game.climber.set_process(false)
 		game.sound.set_muted(true)
 		game.hud.hide()
-		var prefix: String = str(game.active_route.id) + ("-challenge%d" % (index - 3) if index >= 3 else "")
+		var prefix: String = str(game.active_route.id) + ("-extreme" if index >= 3 else "")
 		game._update_camera(1.0)
 		await snap("art-v031-%s-base.png" % prefix)
 		var selected: Dictionary = game.world.holds[1]

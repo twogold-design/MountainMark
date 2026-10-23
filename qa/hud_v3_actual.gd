@@ -34,9 +34,9 @@ func run() -> void:
 	game._update_camera(1.0)
 	await capture("menu")
 	game.save_data = {"completed_routes": {"0":true,"1":true,"2":true}, "summits":3}
-	game.select_style("challenge")
-	game.select_challenge(1)
-	await capture("challenge-menu")
+	game.select_route(1)
+	game.select_style("journey")
+	await capture("canyon-menu")
 	game.select_style("journey")
 	game.select_route(0)
 	game.start_climb(false)
@@ -53,8 +53,8 @@ func run() -> void:
 			break
 	await capture("collection")
 	game.return_menu()
-	game.select_style("challenge")
-	game.select_challenge(1)
+	game.select_route(1)
+	game.select_style("journey")
 	game.start_climb(false)
 	position_at(game.world.holds[0])
 	game.attempt_hold(1, 0)
@@ -68,7 +68,7 @@ func run() -> void:
 	await capture("support-ready")
 	game._on_fell("qa")
 	game.fall_time = 1.0
-	await capture("challenge-fallen")
+	await capture("canyon-fallen")
 	game.return_menu()
 	game.select_style("extreme")
 	game.select_route(2)

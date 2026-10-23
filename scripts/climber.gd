@@ -111,20 +111,22 @@ func climb_to(hold: Dictionary, hand: int = -1, effort: float = 4.0) -> bool:
 	_new_hands[1 - _hand] = target + Vector3(-side * 0.48, -0.32, 0.01)
 	_new_feet[0] = _new_body + Vector3(-0.19, -0.92, -0.28)
 	_new_feet[1] = _new_body + Vector3(0.19, -0.88, -0.28)
-	_step_count = maxi(1, ceili(_old_body.distance_to(_new_body) / 0.40))
+	_step_count = 1
 	var displacement: Vector3 = _new_body - _old_body
 	_traverse = absf(displacement.x) > 0.45 and absf(displacement.x) > absf(displacement.y) * 0.55
-	_motion = "side" if _traverse else ("high_step" if displacement.y > 1.55 else "front")
+	var rock_distance: float = _reach.distance_to(target)
+	_motion = "side" if _traverse else ("pull" if rock_distance <= 1.50 else ("high_step" if rock_distance >= 1.95 else "front"))
 	_motion_direction = signf(displacement.x) if absf(displacement.x) > 0.12 else side
 	# A little uncertainty is a cosmetic variation, never the default climbing gait.
 	_searching_move = total_moves > 0 and not _previous_searching_move and _motion_rng.randf() < SEARCH_CHANCE
 	_previous_searching_move = _searching_move
 	_move_support_foot = support_foot
-	_move_duration = maxf(0.90, float(_step_count) * 0.42)
-	if _traverse:
-		_move_duration += 0.20
-	elif _motion == "high_step":
-		_move_duration += 0.18
+	# Each destination is one action; nearby holds use a hand-led pull.
+	_move_duration = clampf(0.72 + displacement.length() * 0.20, 0.84, 1.30)
+	if _motion == "pull":
+		_move_duration = 0.88 + minf(rock_distance, 1.50) * 0.14
+	elif _traverse:
+		_move_duration += 0.06
 	_move_time = 0.0
 	_effort_sent = false
 	_move_start_lean = _lean
@@ -142,9 +144,7 @@ func get_motion_name() -> String:
 	if summit_mode:
 		return "翻越山顶"
 	if moving:
-		if _searching_move:
-			return "探点落手"
-		return {"front": "正身蹬起", "side": "侧身横渡", "high_step": "折膝高踩"}.get(_motion, "正身蹬起")
+		return {"pull": "近点引体", "front": "踩点蹬伸", "side": "侧身横渡", "high_step": "远点跃抓"}.get(_motion, "近点引体")
 	return "正身待发" if support_foot < 0 else ("左脚踩稳" if support_foot == 0 else "右脚踩稳")
 
 func get_foot_position(index: int) -> Vector3:
@@ -288,56 +288,15 @@ func _process(delta: float) -> void:
 	_update_pose()
 
 func _reach_progress(p: float, start: float, finish: float) -> float:
-	if not _searching_move:
-		return smoothstep(start, finish, p)
-	# One brief check in the middle, with eased entry/exit and unchanged total time.
-	var pause_start: float = 0.48
-	var pause_end: float = pause_start + 0.10 / _move_duration
-	return 0.5 * smoothstep(start, pause_start, p) + 0.5 * smoothstep(pause_end, finish, p)
+	return smoothstep(start, finish, p)
 
 func _advance_move(delta: float) -> void:
 	_move_time += delta
 	var p: float = clampf(_move_time / _move_duration, 0.0, 1.0)
-	# Settle over the new footholds smoothly instead of snapping the torso at arrival.
-	_lean = lerpf(_move_start_lean, 0.0, smoothstep(0.55, 0.88, p))
-	_lean_target = _lean
-	# Feet may find several purchases; the body and each arm make one full sweep.
-	var step_index: int = mini(int(p * float(_step_count)), _step_count - 1)
-	var phase: float = clampf(p * float(_step_count) - float(step_index), 0.0, 1.0)
-	var start_fraction: float = float(step_index) / float(_step_count)
-	var end_fraction: float = float(step_index + 1) / float(_step_count)
-	var plant: float = 0.30 / float(_step_count)
-	if not _effort_sent and p >= plant:
-		_effort_sent = true
-		effort_started.emit()
-	var body_fraction: float = _reach_progress(p, plant, 0.90)
-	_body = _old_body.lerp(_new_body, body_fraction)
-	var turn_envelope: float = smoothstep(plant, maxf(0.28, plant + 0.10), p) * (1.0 - smoothstep(0.64, 0.88, p))
-	var fold: float = sin(smoothstep(plant, 0.80, p) * PI)
-	_motion_turn = _motion_direction * (0.62 if _motion == "side" else (0.20 if _motion == "high_step" else 0.06)) * turn_envelope
-	_motion_crouch = fold * (0.085 if _motion == "high_step" else 0.025)
-	_motion_roll = _motion_direction * (0.09 if _motion == "side" else 0.025) * sin(body_fraction * PI) * turn_envelope
-	_body.z += sin(body_fraction * PI) * (0.045 if _motion == "high_step" else 0.025)
-	var loaded_foot: int = _move_support_foot if _move_support_foot >= 0 else (1 - _hand + step_index) % 2
-	var free_foot: int = 1 - loaded_foot
-	for i in range(2):
-		var start_foot: Vector3 = _old_feet[i].lerp(_new_feet[i], start_fraction)
-		var end_foot: Vector3 = _old_feet[i].lerp(_new_feet[i], end_fraction)
-		# Keep the chosen support planted until the free foot is down and the push begins.
-		# Transfer weight before advancing the old support, so its leg cannot overextend.
-		var fp: float = smoothstep(0.02, 0.28, phase) if i == free_foot else smoothstep(0.50, 0.98, phase)
-		_feet[i] = start_foot.lerp(end_foot, fp)
-		var lift: float = (0.22 if _motion == "high_step" else (0.13 if _motion == "side" else 0.095)) if i == free_foot else 0.055
-		_feet[i].y += sin(fp * PI) * lift
-		_feet[i].z += sin(fp * PI) * 0.045
-		# Leading hand reaches once, trailing hand follows. Lift off the rock instead
-		# of sliding along it; settle both palms before the action is complete.
-		var hp: float = _reach_progress(p, plant + (0.015 if i == _hand else 0.065), 0.88 if i == _hand else 0.94)
-		_hands[i] = _old_hands[i].lerp(_new_hands[i], hp)
-		_hands[i].z += sin(hp * PI) * (0.10 if i == _hand else 0.08)
-		if _searching_move and i == _hand:
-			var check_phase: float = smoothstep(0.48, 0.48 + 0.10 / _move_duration, p)
-			_hands[i].x += _motion_direction * sin(check_phase * TAU) * 0.018
+	if _motion == "pull":
+		_advance_pull(p)
+	else:
+		_advance_push(p)
 	if p >= 1.0:
 		moving = false
 		_motion_turn = 0.0
@@ -352,6 +311,71 @@ func _advance_move(delta: float) -> void:
 			checkpoint_position = _reach
 			checkpoint_hold_id = current_hold_id
 		reached_hold.emit(current_hold_id)
+
+func _advance_pull(p: float) -> void:
+	# Reach before the hips move, then bend the working arm as the body
+	# follows. Feet trail the pull, with only a small lift off the rock.
+	var rise: float = smoothstep(0.14, 0.94, p)
+	_lean = lerpf(_move_start_lean, 0.0, smoothstep(0.18, 0.84, p))
+	_lean_target = _lean
+	_body = _old_body.lerp(_new_body, rise)
+	_body.z -= sin(rise * PI) * 0.035
+	var side: float = -1.0 if _hand == 0 else 1.0
+	var turn: float = smoothstep(0.14, 0.42, p) * (1.0 - smoothstep(0.72, 1.0, p))
+	_motion_turn = side * 0.16 * turn
+	_motion_roll = -side * sin(rise * PI) * 0.045
+	_motion_crouch = 0.0
+	if not _effort_sent and p >= 0.14:
+		_effort_sent = true
+		effort_started.emit()
+	for i in range(2):
+		var hp: float = smoothstep(0.0, 0.55, p) if i == _hand else smoothstep(0.30, 0.91, p)
+		_hands[i] = _old_hands[i].lerp(_new_hands[i], hp)
+		_hands[i].z += sin(hp * PI) * 0.035
+		var delay: float = 0.025 if i == 1 - _hand else 0.075
+		var fp: float = clampf((rise - delay) / (1.0 - delay), 0.0, 1.0)
+		_feet[i] = _old_feet[i].lerp(_new_feet[i], fp)
+		_feet[i].y += sin(fp * PI) * 0.055
+		_feet[i].z += sin(fp * PI) * 0.025
+
+func _advance_push(p: float) -> void:
+	var displacement: Vector3 = _new_body - _old_body
+	var distance: float = displacement.length()
+	# A single acceleration/deceleration curve, never restarted en route.
+	var drive: float = _reach_progress(p, 0.20, 0.84)
+	_lean = lerpf(_move_start_lean, 0.0, smoothstep(0.20, 0.78, p))
+	_lean_target = _lean
+	_body = _old_body.lerp(_new_body, drive)
+	var compression: float = smoothstep(0.10, 0.20, p) * (1.0 - smoothstep(0.20, 0.34, p))
+	var catch_soften: float = smoothstep(0.78, 0.84, p) * (1.0 - smoothstep(0.84, 1.0, p))
+	_motion_crouch = compression * (0.085 if _motion == "high_step" else 0.055) + catch_soften * 0.025
+	var turn: float = smoothstep(0.17, 0.38, p) * (1.0 - smoothstep(0.68, 1.0, p))
+	_motion_turn = _motion_direction * (0.56 if _traverse else (0.20 if _motion == "high_step" else 0.08)) * turn
+	_motion_roll = _motion_direction * (0.08 if _traverse else 0.035) * sin(drive * PI)
+	_body.z += sin(drive * PI) * (0.13 if _motion == "high_step" else (0.025 if _traverse else 0.045)) - compression * 0.06
+	if not _effort_sent and p >= 0.20:
+		_effort_sent = true
+		effort_started.emit()
+	var support: int = _move_support_foot if _move_support_foot >= 0 else 1 - _hand
+	var push_foot: int = 1 - support
+	for i in range(2):
+		# Find a nearby purchase, not a foothold several metres above us.
+		var plant: Vector3 = _old_feet[i]
+		if i == push_foot:
+			plant += Vector3(clampf(displacement.x * 0.12, -0.14, 0.14), minf(0.24, distance * 0.22), 0.0)
+		var placement: float = smoothstep(0.0, 0.16, p)
+		var planted: Vector3 = _old_feet[i].lerp(plant, placement)
+		planted.z += sin(placement * PI) * (0.04 if i == push_foot else 0.0)
+		# Once the leg has extended, release the foot and carry it with the
+		# hips in one airborne tuck. No intermediate footholds or second push.
+		var extension: float = minf(distance * 0.22, 0.26 if i == push_foot else 0.12)
+		var flight: float = clampf((distance * drive - extension) / maxf(0.01, distance - extension), 0.0, 1.0)
+		_feet[i] = planted.lerp(_new_feet[i], flight)
+		_feet[i].y += sin(flight * PI) * ((0.16 if i == push_foot else 0.22) if _motion == "high_step" else 0.065)
+		_feet[i].z += sin(flight * PI) * (0.12 if _motion == "high_step" else 0.035)
+		var hp: float = _reach_progress(p, 0.20 if i == _hand else 0.30, 0.79 if i == _hand else 0.91)
+		_hands[i] = _old_hands[i].lerp(_new_hands[i], hp)
+		_hands[i].z += sin(hp * PI) * (0.09 if i == _hand else 0.07)
 
 func _update_pose() -> void:
 	_torso.transform = body_transform_at(_lean)

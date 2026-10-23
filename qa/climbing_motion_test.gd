@@ -55,9 +55,10 @@ func _run() -> void:
 	actor.set_lean(0.65)
 	check_limbs(actor)
 	var styles: Array[Dictionary] = [
-		{"delta": Vector3(0.15, 1.25, 0), "name": "正身蹬起", "kind": "front"},
+		{"delta": Vector3(0.15, 1.25, 0), "name": "近点引体", "kind": "pull"},
+		{"delta": Vector3(0.15, 1.7, 0), "name": "踩点蹬伸", "kind": "front"},
 		{"delta": Vector3(1.15, 0.35, 0), "name": "侧身横渡", "kind": "side"},
-		{"delta": Vector3(0.25, 2.0, 0), "name": "折膝高踩", "kind": "high_step"}
+		{"delta": Vector3(0.25, 2.0, 0), "name": "远点跃抓", "kind": "high_step"}
 	]
 	var turns: Dictionary = {}
 	var crouches: Dictionary = {}
@@ -73,12 +74,17 @@ func _run() -> void:
 			var free_boot: Vector3 = actor.get_foot_position(1 - loaded)
 			var fixed_hands: Array = actor._hands.duplicate()
 			var fixed_palms: Array[Vector3] = [actor._gloves[0].position, actor._gloves[1].position]
-			actor._process(0.20 * actor._move_duration / float(actor._step_count))
+			actor._process(0.08 * actor._move_duration)
 			verify(actor._feet[loaded].is_equal_approx(fixed_foot), "Loaded foot stays planted during free-foot placement")
 			verify(actor.get_foot_position(loaded).distance_to(fixed_boot) < 0.0002, "Rendered support boot stays planted")
-			verify(actor.get_foot_position(1 - loaded).distance_to(free_boot) > 0.03, "Free foot moves before the loaded foot")
-			verify(actor._hands[0].is_equal_approx(fixed_hands[0]) and actor._hands[1].is_equal_approx(fixed_hands[1]), "Both hands wait for the foothold")
-			verify(actor._gloves[0].position.distance_to(fixed_palms[0]) < 0.0002 and actor._gloves[1].position.distance_to(fixed_palms[1]) < 0.0002, "Rendered hands keep their contacts until the foot is planted: %s support %d" % [style.kind, loaded])
+			if style.kind == "pull":
+				verify(actor._gloves[1].position.distance_to(fixed_palms[1]) > 0.005, "Near reach leads with selected hand")
+				verify(actor._body.is_equal_approx(actor._old_body) and actor.get_foot_position(1 - loaded).distance_to(free_boot) < 0.0002, "Hips and feet wait for the reaching hand")
+				verify(actor._gloves[0].position.distance_to(fixed_palms[0]) < 0.0002, "Other hand holds during initial reach")
+			else:
+				verify(actor.get_foot_position(1 - loaded).distance_to(free_boot) > 0.03, "Free foot moves before the loaded foot")
+				verify(actor._hands[0].is_equal_approx(fixed_hands[0]) and actor._hands[1].is_equal_approx(fixed_hands[1]), "Both hands wait for the foothold")
+				verify(actor._gloves[0].position.distance_to(fixed_palms[0]) < 0.0002 and actor._gloves[1].position.distance_to(fixed_palms[1]) < 0.0002, "Rendered hands keep their contacts until the foot is planted: %s support %d" % [style.kind, loaded])
 			actor.set_support_foot(1 - loaded)
 			verify(actor._move_support_foot == loaded, "Active support is snapshotted for the move")
 			var max_turn: float = 0.0
@@ -94,7 +100,8 @@ func _run() -> void:
 			turns[style.kind] = max_turn
 			crouches[style.kind] = max_crouch
 	verify(float(turns.side) > 0.50 and float(turns.front) < 0.10, "Traverse visibly turns shoulders and hips")
-	verify(float(crouches.high_step) > 0.07 and float(crouches.front) < 0.03, "High step folds then extends more than a front push")
+	verify(float(crouches.high_step) > 0.07 and float(crouches.front) < 0.06, "High step folds then extends more than a front push")
+	verify(is_zero_approx(float(crouches.pull)), "Near pull has no squat or launch")
 	actor.celebrate(Vector3(0, 7.0, -0.8))
 	actor._process(0.05)
 	verify(not actor._support_marker.visible, "Summit hides support ring")

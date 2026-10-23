@@ -10,7 +10,6 @@ class PreviewGame extends Node3D:
 	var help_open: bool = false
 	var route_index: int = 0
 	var play_style: String = "journey"
-	var challenge_index: int = 0
 	var outfit_index: int = 0
 	var muted: bool = false
 	var save_data: Dictionary = {"in_progress": true}
@@ -28,15 +27,11 @@ class PreviewGame extends Node3D:
 	func route_unlocked(_index: int) -> bool: return true
 	func extreme_unlocked() -> bool: return false
 	func route_info() -> Dictionary: return {"subtitle": "晨光穿过松林，第一道山脊就在眼前。"}
-	func challenge_goal_text() -> String: return "连续完成五次稳定抓握"
 	func select_route(index: int) -> void:
 		route_index = index
 		ui.refresh_buttons()
 	func select_style(style: String) -> void:
 		play_style = style
-		ui.refresh_buttons()
-	func select_challenge(index: int) -> void:
-		challenge_index = index
 		ui.refresh_buttons()
 	func start_climb(_resume: bool) -> void: pass
 	func continue_journey() -> void: pass
@@ -73,16 +68,11 @@ func run() -> void:
 	game.ui = ui
 	root.add_child(ui)
 	await process_frame
-	assert(ui.buttons.size() == 13)
-	assert(ui.buttons[5].disabled)
+	assert(ui.buttons.size() == 12)
+	assert(ui.buttons[4].disabled)
 	ui.buttons[1].pressed.emit()
 	assert(game.route_index == 1)
 	await capture("menu")
-	game.select_style("challenge")
-	assert(ui.buttons.size() == 16)
-	ui.buttons[8].pressed.emit()
-	assert(game.challenge_index == 2)
-	await capture("challenges")
 	game.mode = "journal"
 	ui.refresh_buttons()
 	assert(ui.buttons[0].disabled)
@@ -99,7 +89,7 @@ func run() -> void:
 	await process_frame
 	assert(ui.buttons.size() == 4)
 	await capture("summit")
-	print("HUD_V3_PASS: route/mode/challenge callbacks; lock states; journal pagination; summit delay; 4 rendered screens")
+	print("HUD_V3_PASS: route/mode callbacks; lock states; journal pagination; summit delay; 3 rendered screens")
 	quit()
 func capture(label: String) -> void:
 	ui.queue_redraw()
