@@ -39,8 +39,7 @@ func begin(style: String, hand: int, support: int, searching: bool, prepared_lea
 	var side: float = -1.0 if hand == 0 else 1.0
 	var delta: Vector3
 	match style:
-		"pull": delta = Vector3(side * 0.24, 1.25, 0.0)
-		"front": delta = Vector3(side * 0.24, 1.70, 0.0)
+		"front": delta = Vector3(side * 0.24, 1.25, 0.0)
 		"side": delta = Vector3(side * 1.65, 0.25, 0.0)
 		"high_step": delta = Vector3(side * 0.25, 2.10, 0.0)
 		_: delta = Vector3(side * 0.90, 0.95, 0.0)
@@ -265,7 +264,7 @@ func run() -> void:
 	root.add_child(actor)
 	actor.set_process(false)
 	actor._motion_rng.seed = 72217
-	for style: String in ["pull", "front", "side", "high_step", "drop_knee"]:
+	for style: String in ["front", "side", "high_step", "drop_knee"]:
 		for hand in range(2):
 			for support: int in [-1, 0, 1]:
 				if style == "drop_knee" and support != hand:

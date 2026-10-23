@@ -83,7 +83,7 @@ func check_selection() -> void:
 		verify(begin(hand, hand, Vector3(side * 0.90, 0.20, 0.0)), "Low traverse fixture begins")
 		verify(actor._motion != "drop_knee", "A low traverse does not drop the knee unnecessarily")
 		verify(begin(hand, hand, Vector3(side * 0.20, 2.10, 0.0)), "High-step fixture begins")
-		verify(actor._motion == "high_step" and actor.get_motion_name() == "远点跃抓", "High stepping remains a separate, accurately named action")
+		verify(actor._motion == "high_step" and actor.get_motion_name() == "屈膝高踩", "High stepping remains a separate, accurately named action")
 		verify(begin(hand, hand, delta, side * 0.90), "Support snapshot fixture begins")
 		actor.set_support_foot(1 - hand)
 		verify(actor._move_support_foot == hand and actor._motion == "drop_knee", "Changing the next support cannot switch the active drop knee")

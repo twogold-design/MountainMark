@@ -72,8 +72,8 @@ func run() -> void:
 		release(MOUSE_BUTTON_LEFT)
 		verify(game.climber.moving and game.climber._hand == hand,"Released grip animates the selected hand")
 		var initial: Vector3 = game.climber._gloves[hand].position
-		game.climber._process(game.climber._move_duration*0.08)
-		verify(game.climber._gloves[hand].position.distance_to(initial) > 0.005,"Selected rendered palm leads the near pull")
+		game.climber._process(game.climber._move_duration*0.40)
+		verify(game.climber._gloves[hand].position.distance_to(initial) > 0.005,"Selected rendered palm advances during the restored reach")
 		game.climber._process(game.climber._move_duration)
 		verify(game.climber._gloves[hand].position.distance_to(Vector3(game.world.holds[id].position)+Vector3(0,0,0.025)) < 0.002,"Selected hand reaches actual target")
 		verify(game._grip_hand_history == hand,"Only successful move updates hand history")

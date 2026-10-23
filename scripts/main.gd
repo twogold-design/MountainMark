@@ -512,7 +512,7 @@ func hold_reach_info(id: int, hand: int = -1, lean_value: float = 2.0) -> Dictio
 	var distance: float = shoulder.distance_to(target)
 	var required: int = int(hold.get("support", -1))
 	var supported: bool = required < 0 or selected_support == required
-	# Each route edge is one continuous pull or leg-driven reach.
+	# One route edge includes coordinated footwork, a body push and a final reach.
 	var push_bonus: float = 0.05 if required >= 0 and supported else 0.0
 	var maximum: float = ClimberScript.ARM_REACH + ClimberScript.STEP_REACH + push_bonus
 	var best_distance: float = climber.get_shoulder_position(chosen, stance).distance_to(target)
