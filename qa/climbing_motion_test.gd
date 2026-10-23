@@ -68,7 +68,8 @@ func _run() -> void:
 			actor.set_support_foot(loaded)
 			var target: Vector3 = actor.get_reach_origin() + Vector3(style.delta)
 			verify(actor.climb_to({"id": 1, "position": target}, 1, 5.0), "Start " + str(style.name))
-			verify(actor.get_motion_name() == style.name, "Geometry chooses " + str(style.name))
+			var expected_name: String = "折膝侧伸" if style.kind == "side" and loaded == 1 else str(style.name)
+			verify(actor.get_motion_name() == expected_name, "Geometry chooses " + expected_name)
 			var fixed_foot: Vector3 = actor._old_feet[loaded]
 			var fixed_boot: Vector3 = actor.get_foot_position(loaded)
 			var free_boot: Vector3 = actor.get_foot_position(1 - loaded)
@@ -91,7 +92,7 @@ func _run() -> void:
 			var max_crouch: float = 0.0
 			while actor.moving:
 				actor._process(0.012)
-				max_turn = maxf(max_turn, absf(actor._motion_turn))
+				max_turn = maxf(max_turn, absf(actor._torso.rotation.y))
 				max_crouch = maxf(max_crouch, actor._motion_crouch)
 				check_limbs(actor)
 			verify(actor.current_hold_id == 1, "Action reaches the requested hold")

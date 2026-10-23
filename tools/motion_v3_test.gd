@@ -66,6 +66,7 @@ func _run() -> void:
 	sound.set_wind_strength(1.0)
 	sound._process(1.0)
 	var loud: float = sound._wind.volume_db
+	sound.set_climbing_state(100.0, true, false)
 	sound.play_grip()
 	sound._process(0.1)
 	verify(sound._wind.volume_db < loud, "Grip ducks wind")

@@ -6,6 +6,7 @@ var _air: AudioStreamPlayer
 var _breath: AudioStreamPlayer
 var _voice: AudioStreamPlayer
 var _recovery: AudioStreamPlayer
+var _grip_touch: AudioStreamPlayer
 var _music: AudioStreamPlayer
 var _route_bed: AudioStreamPlayer
 var _route_theme: int = 0
@@ -33,10 +34,17 @@ var _voice_clip: String = ""
 var _voice_lock: float = 0.0
 var _exertion_cooldown: float = 0.0
 var _voice_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+const GRIP_CLIPS: Array[String] = ["grip_1", "grip_2", "grip_3", "grip_4", "grip_5", "grip_6"]
+var _grip_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var _grip_bag: Array[int] = []
+var _last_grip_sample: int = -1
 
 func _ready() -> void:
 	_voice_rng.randomize()
-	for clip_name: String in ["wind", "air", "breath", "grip", "chalk", "fall", "checkpoint", "summit", "effort_1", "effort_2", "pant", "recovery"]:
+	_grip_rng.randomize()
+	var clip_names: Array[String] = ["wind", "air", "breath", "grip", "chalk", "fall", "checkpoint", "summit", "effort_1", "effort_2", "pant", "recovery"]
+	clip_names.append_array(GRIP_CLIPS)
+	for clip_name: String in clip_names:
 		var stream: AudioStreamWAV = load("res://assets/audio/" + clip_name + ".wav") as AudioStreamWAV
 		if stream != null:
 			if clip_name == "wind" or clip_name == "air":
@@ -49,6 +57,7 @@ func _ready() -> void:
 	_breath = _make_player("Breathing", -16.0)
 	_voice = _make_player("ClimberVoice", -11.0)
 	_recovery = _make_player("RestReward", -13.0)
+	_grip_touch = _make_player("GripContact", -11.0)
 	_music = _make_player("SummitMusic", -12.0)
 	_route_bed = _make_player("RouteNature", -28.0)
 	for theme in range(3):
@@ -111,6 +120,10 @@ func set_climbing_state(stamina: float, active: bool, resting: bool) -> void:
 		_stop_voice()
 		if not active:
 			_recovery.stop()
+			# Let the last catch finish underneath the summit music, even when a
+			# long frame resolves contact and summit arrival in the same update.
+			if not _summit:
+				stop_grip()
 		return
 	var was_fatigued: bool = _fatigued
 	if _stamina < FATIGUE_ENTER:
@@ -246,10 +259,35 @@ func _make_nature_loop(theme: int) -> AudioStreamWAV:
 func set_altitude(progress: float) -> void:
 	_altitude = clampf(progress, 0.0, 1.0)
 
-func play_grip() -> void:
-	_grip_duck = 0.42
+func play_grip(kind: String = "normal") -> void:
+	if not _started or _muted or not _climbing_active or _summit:
+		return
+	if _grip_bag.is_empty():
+		for index in range(GRIP_CLIPS.size()):
+			_grip_bag.append(index)
+		for index in range(_grip_bag.size() - 1, 0, -1):
+			var other: int = _grip_rng.randi_range(0, index)
+			var saved: int = _grip_bag[index]
+			_grip_bag[index] = _grip_bag[other]
+			_grip_bag[other] = saved
+		if _grip_bag.back() == _last_grip_sample:
+			var saved: int = _grip_bag[0]
+			_grip_bag[0] = _grip_bag[-1]
+			_grip_bag[-1] = saved
+	var sample_index: int = _grip_bag.back()
+	if not _clips.has(GRIP_CLIPS[sample_index]):
+		return
+	_grip_bag.pop_back()
+	_last_grip_sample = sample_index
+	var surface_pitch: float = 1.06 if kind == "small" else (0.94 if kind == "wet" else 1.0)
+	_grip_touch.pitch_scale = surface_pitch * _grip_rng.randf_range(0.96, 1.04)
+	var gain: float = (-12.5 if kind in ["wet", "small"] else -11.0) + _grip_rng.randf_range(-0.8, 0.8)
+	_play_on(_grip_touch, GRIP_CLIPS[sample_index], gain)
+	_grip_duck = maxf(_grip_duck, 0.36)
 	_grip_count += 1
-	_effect("grip", -8.0, true)
+
+func stop_grip() -> void:
+	_grip_touch.stop()
 
 func play_chalk() -> void:
 	_effect("chalk", -10.0, true)
@@ -273,6 +311,7 @@ func set_muted(muted: bool) -> void:
 		_air.volume_db = -80.0
 		_route_bed.volume_db = -80.0
 		_stop_voice()
+		stop_grip()
 		_breath_timer = maxf(_breath_timer, 2.0)
 		_recovery.stop()
 		_music.stop()
@@ -296,6 +335,7 @@ func shutdown() -> void:
 	_theme_streams.clear()
 
 func reset_ascent() -> void:
+	stop_grip()
 	set_climbing_state(100.0, false, false)
 	_summit = false
 	_wind_strength = 0.0

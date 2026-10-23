@@ -24,6 +24,7 @@ func run() -> void:
 	verify(game.has_method("hold_reach_info") and game.climber.has_method("get_motion_name") and game.hud.has_method("_draw_support_card"), "packaged geometry, motions and HUD exist together")
 	verify(game.climber.has_method("_reach_progress"), "packaged actor includes the continuous reach update")
 	verify(game.climber.has_signal("effort_started") and game.sound.has_method("play_exertion") and game.sound._clips.has_all(["effort_1", "effort_2", "pant", "recovery"]), "packaged exertion, breathing and rest audio assets exist")
+	verify(game.climber.has_signal("hand_contact") and game.sound._clips.has_all(["grip_1", "grip_2", "grip_3", "grip_4", "grip_5", "grip_6"]), "packaged hand contacts and six grip samples exist")
 	if failures > 0:
 		game.sound.shutdown()
 		quit(1)
@@ -64,6 +65,12 @@ func run() -> void:
 		game.climber.set_support_foot(0)
 		game.climber.climb_to({"id": id, "position": targets[style]}, 1, 0.0)
 		verify(game.climber.get_motion_name() == names[style], "packaged motion " + names[style])
+	game.climber.setup({"id": 0, "position": Vector3(0.0, 2.5, 0.45)})
+	game.climber.climbing = true
+	game.climber.set_support_foot(1)
+	game.climber.set_lean(0.90)
+	game.climber.climb_to({"id": 1, "position": Vector3(0.90, 3.45, 0.45)}, 1, 0.0)
+	verify(game.climber.get_motion_name() == "折膝侧伸", "packaged drop knee is separate from high stepping")
 	game.sound.shutdown()
 	game.queue_free()
 	await create_timer(0.3).timeout
