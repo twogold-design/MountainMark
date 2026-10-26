@@ -18,7 +18,7 @@ func get_hint_lines() -> Array[String]:
 	match game.mode:
 		"playing":
 			return [
-				"点住岩点，沿淡线向后拉 → 绿色时松手 · Q/E 选脚 · A/D 微调身体",
+				"左键自动选手，右键另一手 · 点住沿淡线回拉，绿色时松手 · Q/E 选脚 · A/D 微调",
 				"W 观察 · 中键/Z X 读线 · 空格 镁粉 · R 返回 · Esc 暂停 · 【·】恢复界面"
 			]
 		"paused":

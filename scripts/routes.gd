@@ -5,8 +5,6 @@ const IDS := ["ridge", "canyon", "summit"]
 const HEIGHTS := [72.0, 90.0, 108.0]
 const SUBTITLES := ["晨光松林 · 选择自己的山路", "瀑布回声 · 横渡与湿壁", "雪岩云海 · 等待风的间隙"]
 const DESCRIPTIONS := ["绕行有岩台，直上更费力。沿松林与旧路标寻找山顶。", "先落脚，再移重心。沿峡谷横渡，避开湿滑或用镁粉处理。", "读懂飘带与风声，趁风弱时出手。在云海之上完成最后攀登。"]
-const CHALLENGES := ["稳稳向上", "横渡练习", "湿壁考验"]
-
 static func info(index: int) -> Dictionary:
 	index = clampi(index, 0, 2)
 	return {"id": IDS[index], "name": NAMES[index], "height": HEIGHTS[index], "subtitle": SUBTITLES[index], "description": DESCRIPTIONS[index]}
@@ -19,9 +17,9 @@ static func _point(holds: Array[Dictionary], p: Vector3, rest: bool = false, anc
 static func _link(holds: Array[Dictionary], from: int, to: int) -> void:
 	holds[from].links.append(to)
 
-static func build(index: int, style: String = "journey", challenge: int = 0) -> Dictionary:
-	if style == "challenge":
-		return _challenge(challenge)
+static func build(index: int, style: String = "journey") -> Dictionary:
+	if style not in ["journey", "extreme"]:
+		style = "journey"
 	var route: Dictionary = info(index)
 	var holds: Array[Dictionary] = []
 	var hub: int = _point(holds, Vector3(0, 1, 0.45), true, true)
@@ -69,24 +67,4 @@ static func build(index: int, style: String = "journey", challenge: int = 0) -> 
 			_link(holds, previous, hub)
 	route["holds"] = holds
 	route["style"] = style
-	return route
-
-static func _challenge(index: int) -> Dictionary:
-	index = clampi(index, 0, 2)
-	var route: Dictionary = info(1 if index > 0 else 0)
-	route["name"] = CHALLENGES[index]
-	route["description"] = ["连续五次精准抓握，再抵达终点。", "不用镁粉，选择支撑脚，完成横渡。", "零跌落通过湿壁；镁粉保护持续 18 秒。"][index]
-	var holds: Array[Dictionary] = []
-	_point(holds, Vector3(0, 1, 0.45), true, true)
-	for i in range(1, 11):
-		var x: float = sin(float(i) * PI / 5.0) * (2.8 if index == 1 else 1.3)
-		var p := Vector3(x, 1.0 + float(i) * 1.25, 0.45)
-		var rest: bool = i == 5 or i == 10
-		var kind: String = "traverse" if index == 1 else ("wet" if index == 2 else "normal")
-		var foot: int = (0 if x > Vector3(holds[i - 1].position).x else 1) if index == 1 and not rest else -1
-		_point(holds, p, rest, false, "normal" if rest else kind, "main", foot)
-		_link(holds, i - 1, i)
-	route["height"] = 13.5
-	route["holds"] = holds
-	route["style"] = "challenge"
 	return route

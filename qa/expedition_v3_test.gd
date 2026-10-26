@@ -58,14 +58,13 @@ func freeze() -> void:
 	game.sound.set_process(false)
 	game.world.set_process(false)
 
-func begin(route: int, style: String = "journey", challenge: int = 0) -> void:
+func begin(route: int, style: String = "journey") -> void:
 	game.mode = "menu"
 	game.route_index = route
 	game.play_style = style
-	game.challenge_index = challenge
 	game.start_climb(false)
 	freeze()
-	verify(game.mode == "playing", "Start %d %s %d" % [route, style, challenge])
+	verify(game.mode == "playing", "Start %d %s" % [route, style])
 
 func tick(dt: float, axis: float = 0.0) -> void:
 	# Same environment rules as main._process, then the real controller and actor.
@@ -87,7 +86,11 @@ func controller_axis() -> float:
 
 func prepare(id: int, hand: int) -> bool:
 	game._update_camera(1.0)
-	game.attempt_hold(id, hand)
+	if "--auto-hands" in OS.get_cmdline_user_args():
+		game._press_mouse_grip(id, MOUSE_BUTTON_LEFT)
+		verify(not game.grip_active or game.grip_hand == hand, "Automatic preparation agrees with route recommendation")
+	else:
+		game.attempt_hold(id, hand)
 	if not game.grip_active:
 		return false
 	for step in range(440):
@@ -120,7 +123,10 @@ func move(id: int, hand: int) -> bool:
 			tick(0.01)
 	if not prepare(id, hand):
 		return false
-	game._release_grip(hand)
+	if "--auto-hands" in OS.get_cmdline_user_args():
+		game._release_mouse_grip(MOUSE_BUTTON_LEFT)
+	else:
+		game._release_grip(hand)
 	if not game.climber.moving:
 		return false
 	for step in range(450):
@@ -152,8 +158,11 @@ func full_ascent(branch: String) -> bool:
 				id = candidate
 		if game.climber.stamina < 30.0 or (str(game._hold(id).kind) == "wet" and game.chalk_protection <= 0.0):
 			game.use_chalk()
+		game.select_support(int(game._hold(id).get("support", -1)))
 		var dx: float = Vector3(game._hold(id).position).x - game.climber.get_reach_origin().x
 		var hand: int = (1 if dx > 0 else 0) if absf(dx) > 0.55 else (1 - game.last_hand)
+		if "--auto-hands" in OS.get_cmdline_user_args():
+			hand = game.recommended_hand(id)
 		if game.climber.stamina < game.hold_effort(id, hand, 0.0) + 3.0 and game.chalk_charges > 0:
 			for cooldown_step in range(700):
 				if game.climber._chalk_cooldown <= 0.0 or game.mode != "playing":
@@ -181,7 +190,6 @@ func _run() -> void:
 	for route in range(3):
 		for style in ["journey", "extreme"]:
 			graph_check(ROUTES.build(route, style), "%d %s" % [route, style])
-		graph_check(ROUTES.build(0, "challenge", route), "challenge %d" % route)
 	player_path = ProjectSettings.globalize_path("res://.runtime/save.json")
 	player_exists = FileAccess.file_exists(player_path)
 	if player_exists:
@@ -220,17 +228,10 @@ func _run() -> void:
 	verify(game.save_data.get("collections", {}).size() == 18, "All safe and shortcut collectibles")
 	verify(game.save_data.get("badges", {}).has("山路熟客"), "Both branches award explorer badge")
 	begin(0)
-	# Preserve a live journey while challenges and extreme sessions update independent records.
+	# Preserve a live journey while extreme sessions update independent records.
 	game.elapsed = 42.0
 	game._save_progress()
 	var live_journey: Dictionary = progress_snapshot()
-	for challenge in range(3):
-		begin(0, "challenge", challenge)
-		if challenge == 1:
-			verify(not game.use_chalk(), "Traverse challenge disallows chalk")
-		verify(full_ascent("main") and game.falls == 0, "Real challenge complete %d" % challenge)
-		verify(game.save_data.get("records", {}).has("challenge_%d" % challenge), "Challenge record %d" % challenge)
-		verify(progress_snapshot() == live_journey, "Challenge cannot overwrite active journey %d" % challenge)
 	for route in range(3):
 		begin(route, "extreme")
 		verify(game.chalk_charges == 2, "Extreme has two chalk charges")
@@ -245,7 +246,7 @@ func _run() -> void:
 		begin(2, style)
 		verify(full_ascent("shortcut"), "Cloud shortcut allows 0.65 quality " + style)
 	target_quality = 0.9
-	# Observation, pause and challenge retry follow their real input/state paths.
+	# Observation, pause and retry follow their real input/state paths.
 	begin(0)
 	var origin: Vector3 = game.climber.get_reach_origin()
 	var key_event: InputEventKey = InputEventKey.new()
@@ -268,17 +269,17 @@ func _run() -> void:
 	game._unhandled_input(key_event)
 	verify(game.mode == "playing" and game.climber.process_mode == Node.PROCESS_MODE_INHERIT, "Esc resumes the current climb")
 	freeze()
-	begin(0, "challenge", 2)
-	verify(move(game.reachable[0], 1), "Challenge moves before fall")
+	begin(0)
+	verify(move(game.reachable[0], 1), "Journey moves before fall")
 	game._on_fell("主动返回")
-	verify(game.mode == "fallen", "Challenge shows fall feedback")
+	verify(game.mode == "fallen", "Journey shows fall feedback")
 	game.fall_time = 0.7
 	game.retry_after_fall()
 	freeze()
-	verify(game.mode == "playing" and game.play_style == "challenge" and game.challenge_index == 2, "Retry preserves selected short challenge")
-	verify(game.climber.current_hold_id == 0 and game.climber.total_moves == 0 and game.falls == 0 and game.world.holds.size() == 11, "Challenge retry restarts only short course")
+	verify(game.mode == "playing" and game.play_style == "journey", "Retry preserves journey mode")
+	verify(game.climber.current_hold_id == 0 and game.falls == 1, "Journey retry restores checkpoint and keeps fall count")
 	# Actual foot gating, then a successful retry with the correct selected foot.
-	begin(0, "challenge", 1)
+	begin(1)
 	var target: int = game.reachable[0]
 	var required: int = int(game._hold(target).support)
 	verify(required >= 0, "Traverse requires a support foot")
@@ -289,11 +290,12 @@ func _run() -> void:
 	tick(0.36)
 	verify(move(target, 1), "Correct support allows traverse")
 	# Cost and idle drain use identical position/hand/quality for before-after comparison.
-	begin(0, "challenge", 2)
+	begin(1)
 	target = game.reachable[0]
 	game.chalk_protection = 0.0
+	game._hold(target)["kind"] = "wet"
 	var wet_cost: float = game.hold_effort(target, 1, 1.0)
-	verify(game.use_chalk(), "Wet challenge chalk usable")
+	verify(game.use_chalk(), "Wet rock chalk usable")
 	verify(is_equal_approx(wet_cost - game.hold_effort(target, 1, 1.0), 4.0), "Chalk removes wet grip surcharge")
 	verify(move(target, 1), "Reach wet hold")
 	game.chalk_protection = 0.0
@@ -312,6 +314,7 @@ func _run() -> void:
 	game._update_reachable()
 	target = game.reachable[0]
 	game._hold(target)["kind"] = "wind"
+	game._hold(target)["support"] = -1
 	game.select_support(-1)
 	game.attempt_hold(target, 0)
 	game.wind_strength = 0.0

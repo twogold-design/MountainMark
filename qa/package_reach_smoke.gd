@@ -29,9 +29,9 @@ func run() -> void:
 		game.sound.shutdown()
 		quit(1)
 		return
-	game.save_data = {}
-	game.play_style = "challenge"
-	game.challenge_index = 1
+	game.save_data = {"completed_routes":{"0":true}}
+	game.route_index = 1
+	game.play_style = "journey"
 	game.start_climb(false)
 	game.select_support(0)
 	var left_pose: Vector3 = game.climber.get_body_position()

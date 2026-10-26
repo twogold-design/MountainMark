@@ -1,5 +1,5 @@
 extends Node3D
-## Three mountains, branching journeys, challenges and a persistent expedition journal.
+## Three mountains, branching journeys, extreme ascents and a persistent expedition journal.
 const Routes = preload("res://scripts/routes.gd")
 const ROUTE_NAMES := ["松风岩脊", "回声峡谷", "云上孤峰"]
 const WorldScript = preload("res://scripts/world.gd")
@@ -64,7 +64,6 @@ var _save_path: String
 var route_index: int = 0
 var route_height: float = 72.0
 var play_style: String = "journey"
-var challenge_index: int = 0
 var selected_support: int = -1
 var chalk_protection: float = 0.0
 var wind_strength: float = 0.0
@@ -86,6 +85,7 @@ var fall_title: String = "这一步，没能抓稳。"
 var grip_active: bool = false
 var grip_id: int = -1
 var grip_hand: int = 0
+var _grip_button: int = 0
 var grip_time: float = 0.0
 var grip_power: float = 0.0
 var grip_target: float = 0.62 # Reference pull strength to the target center.
@@ -260,9 +260,9 @@ func _input(event: InputEvent) -> void:
 			set_grip_drag(event.position)
 			get_viewport().set_input_as_handled()
 			return
-		if event is InputEventMouseButton and not event.pressed and event.button_index == (MOUSE_BUTTON_LEFT if grip_hand == 0 else MOUSE_BUTTON_RIGHT):
+		if event is InputEventMouseButton and not event.pressed and event.button_index == _grip_button:
 			set_grip_drag(event.position)
-			_release_grip(grip_hand)
+			_release_mouse_grip(event.button_index)
 			get_viewport().set_input_as_handled()
 			return
 	# Handle this before GUI focus, including on menus and paused screens. The
@@ -338,11 +338,12 @@ func _update_read_line_camera(delta: float) -> void:
 		camera_reading = camera_orbiting or absf(camera_yaw) > 0.015 or absf(camera_pitch) > 0.015
 
 func start_climb(resume: bool = false) -> void:
+	_normalize_play_style()
 	if resume:
 		route_index = clampi(int(save_data.get("route", 0)), 0, 2)
 		play_style = "journey"
-	elif play_style != "challenge" and not route_unlocked(route_index):
-		show_toast("山路尚未开启", "先完成上一条路线，或进入岩段挑战练习。", 4.0)
+	elif not route_unlocked(route_index):
+		show_toast("山路尚未开启", "完成上一座山的登山旅程后，即可开启这条路线。", 4.0)
 		return
 	if play_style == "extreme" and not extreme_unlocked():
 		show_toast("先认识这座山", "完成本路线的登山旅程后，开启极限登顶。", 4.0)
@@ -393,7 +394,7 @@ func start_climb(resume: bool = false) -> void:
 	_camera_ready = false
 	_update_reachable()
 	hud.refresh_buttons()
-	show_toast(str(active_route.name), challenge_goal_text() if play_style == "challenge" else "左/右键点住岩点，朝目标反方向回拉，绿色时松手。身体自动找稳，Q/E 与 A/D 可手动微调。", 7.0)
+	show_toast(str(active_route.name), "左键自动选手，右键用另一手。点住岩点朝反方向回拉，绿色时松手；身体自动找稳，Q/E 与 A/D 可微调。", 7.0)
 	if resume and int(save_data.get("version", 0)) < 3:
 		show_toast("旧旅程已保留，山路已更新", "旧版锚点布局已变化，本次从营地出发；原登顶成绩仍在。", 8.0)
 
@@ -480,17 +481,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and mode == "playing" and not help_open:
 		if event.button_index != MOUSE_BUTTON_LEFT and event.button_index != MOUSE_BUTTON_RIGHT:
 			return
-		var hand: int = 0 if event.button_index == MOUSE_BUTTON_LEFT else 1
 		if not event.pressed:
-			if grip_active and hand == grip_hand:
+			if grip_active and event.button_index == _grip_button:
 				set_grip_drag(event.position)
-			_release_grip(hand)
+			_release_mouse_grip(event.button_index)
 		elif not grip_active and not climber.moving and not climber.miss_reaching and not camera_orbiting:
 			_update_hover(event.position)
 			if hovered_id >= 0:
-				attempt_hold(hovered_id, hand, event.position)
+				_press_mouse_grip(hovered_id, event.button_index, event.position)
 			else:
-				show_toast("先选一处落手点", "左/右键按住岩点，向后拖拽调整力度与方向，再松开。W 只观察路线。", 2.5)
+				show_toast("先选一处落手点", "左键自动选手，右键用另一手。点住岩点向后拉，绿色时松手；W 只观察路线。", 2.5)
 
 func next_hold_id() -> int:
 	var origin: Vector3 = climber.get_reach_origin()
@@ -545,17 +545,39 @@ func balance_target_for_hold(id: int, hand: int) -> float:
 	return (low + high) * 0.5
 
 func recommended_hand(id: int) -> int:
-	var target: Vector3 = Vector3(_hold(id).position) + Vector3(0.0, 0.0, 0.025)
-	var best_hand: int = 0
-	var best_score: float = INF
-	for hand: int in range(2):
-		var stance: float = balance_target_for_hold(id, hand)
-		var distance: float = climber.get_shoulder_position(hand, stance).distance_to(target)
-		var score: float = distance + absf(stance) * 0.04 + (0.10 if hand == _grip_hand_history else 0.0)
-		if score < best_score:
-			best_score = score
-			best_hand = hand
-	return best_hand
+	# A usable hand takes precedence over alternation. Keep the choice stable
+	# while leaning: compare each shoulder at its best attainable stance.
+	var left: Dictionary = hold_reach_info(id, 0)
+	var right: Dictionary = hold_reach_info(id, 1)
+	if bool(left.can_adjust) != bool(right.can_adjust):
+		return 0 if bool(left.can_adjust) else 1
+	var dx: float = Vector3(_hold(id).position).x - climber.get_reach_origin().x
+	if absf(dx) > 0.55:
+		return 0 if dx < 0.0 else 1
+	if _grip_hand_history >= 0:
+		return 1 - _grip_hand_history
+	var target: Vector3 = Vector3(left.target)
+	var left_distance: float = climber.get_shoulder_position(0, float(left.target_balance)).distance_to(target)
+	var right_distance: float = climber.get_shoulder_position(1, float(right.target_balance)).distance_to(target)
+	return 0 if left_distance <= right_distance else 1
+
+func _press_mouse_grip(id: int, button: int, anchor: Vector2 = Vector2.INF) -> void:
+	if grip_active or button not in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
+		return
+	var hand: int = recommended_hand(id)
+	if button == MOUSE_BUTTON_RIGHT:
+		hand = 1 - hand
+	attempt_hold(id, hand, anchor)
+	if grip_active:
+		_grip_button = button
+
+func _release_mouse_grip(button: int) -> void:
+	# The initiating mouse button and the anatomical hand are independent.
+	if grip_active and button == _grip_button:
+		_release_grip(grip_hand)
+
+func grip_button_name() -> String:
+	return "右键" if _grip_button == MOUSE_BUTTON_RIGHT else "左键"
 
 func hold_reach_info(id: int, hand: int = -1, lean_value: float = 2.0) -> Dictionary:
 	var chosen: int = recommended_hand(id) if hand < 0 else clampi(hand, 0, 1)
@@ -590,9 +612,10 @@ func _refresh_grip_geometry() -> void:
 	balance_window = lerpf(0.30, 0.20, altitude) - long_reach * 0.025
 	_refresh_drag_aim()
 
-func attempt_hold(id: int, hand: int = 0, anchor: Vector2 = Vector2.INF) -> void:
+func attempt_hold(id: int, hand: int = -1, anchor: Vector2 = Vector2.INF) -> void:
 	if mode != "playing" or help_open or climber.moving or climber.miss_reaching or grip_active or _slip_cooldown > 0.0 or id not in readable:
 		return
+	hand = recommended_hand(id) if hand < 0 else clampi(hand, 0, 1)
 	var hold: Dictionary = _hold(id)
 	var foot: int = int(hold.get("support", -1))
 	# Set up required support as part of the gesture. Q/E can still override it
@@ -797,6 +820,7 @@ func _release_grip(hand: int) -> void:
 		show_toast("握力不足以拉起身体", "空格使用镁粉，或 R 返回安全锚点。", 2.5)
 
 func _cancel_grip() -> void:
+	_grip_button = 0
 	grip_active = false
 	grip_id = -1
 	grip_time = 0.0
@@ -822,9 +846,6 @@ func _fail_grip(reason: String) -> void:
 
 func use_chalk() -> bool:
 	if mode != "playing" or grip_active or climber.moving:
-		return false
-	if play_style == "challenge" and challenge_index == 1:
-		show_toast("横渡练习 · 无镁粉", "选好支撑脚，在中间岩台恢复握力。", 3.0)
 		return false
 	if chalk_charges <= 0:
 		show_toast("镁粉用完了", "到达安全锚点可以补满；极限模式每段仅两次。", 2.8)
@@ -924,9 +945,6 @@ func retry_after_fall() -> void:
 	# A short guard stops the release/click that caused the fall from dismissing it.
 	if mode != "fallen" or fall_time < 0.6:
 		return
-	if play_style == "challenge":
-		start_climb(false)
-		return
 	_reset_controls()
 	climber.recover()
 	climber.climbing = true
@@ -964,51 +982,44 @@ func _finish() -> void:
 	climber.celebrate(world.get_summit_position())
 	sound.play_summit()
 	toast_time = 0.0
-	var success: bool = true
-	if play_style == "challenge":
-		success = best_precise_streak >= 5 if challenge_index == 0 else (chalk_used == 0 if challenge_index == 1 else falls == 0)
-	result_title = ("岩段挑战完成" if success else "抵达终点，再精进一点") if play_style == "challenge" else ["松风为你停留。", "回声终于有了回答。", "你站在了云海之上。"][route_index]
+	result_title = ["松风为你停留。", "回声终于有了回答。", "你站在了云海之上。"][route_index]
 	result_detail = "%s · %s · 跌落 %d 次 · %d 次抓握" % [active_route.name, time_string(elapsed), falls, climber.total_moves]
-	if play_style == "challenge" and not success:
-		result_detail = "本次连续精准 %d / 5；完成整段并连续五次精准抓握即可获得纪念章。" % best_precise_streak
-	var key: String = "challenge_%d" % challenge_index if play_style == "challenge" else "%s_%s" % [Routes.IDS[route_index], play_style]
+	var key: String = "%s_%s" % [Routes.IDS[route_index], play_style]
 	var records: Dictionary = save_data.get("records", {})
 	var record: Dictionary = records.get(key, {})
-	if success:
-		record["completions"] = int(record.get("completions", 0)) + 1
-		if float(record.get("best", 0.0)) <= 0.0 or elapsed < float(record.best):
-			record["best"] = elapsed
-		record["first_date"] = record.get("first_date", Time.get_date_string_from_system())
-		record["last_date"] = Time.get_date_string_from_system()
-		records[key] = record
-		save_data["records"] = records
-		_add_badge("岩段练习生" if play_style == "challenge" else "群山之上")
-		if falls == 0:
-			_add_badge("稳如磐石")
-		if chalk_charges > 0:
-			_add_badge("留有余力")
-		if play_style != "challenge":
-			var completed: Dictionary = save_data.get("completed_routes", {})
-			completed[str(route_index)] = true
-			save_data["completed_routes"] = completed
-			if route_index == 2:
-				_add_badge("云海来客")
-			if play_style == "extreme":
-				_add_badge("孤峰行者")
-			var count: int = 0
-			for collected in save_data.get("collections", {}):
-				if str(collected).begins_with(str(Routes.IDS[route_index])):
-					count += 1
-			if count >= 6:
-				_add_badge("山路熟客")
-			elif count > 0:
-				_add_badge("另辟蹊径")
-			save_data["summits"] = int(save_data.get("summits", 0)) + 1
-			var best: float = float(save_data.get("best_time", 0.0))
-			if elapsed < best or best <= 0.0:
-				save_data["best_time"] = elapsed
-			if falls == 0:
-				save_data["clean_ascent"] = true
+	record["completions"] = int(record.get("completions", 0)) + 1
+	if float(record.get("best", 0.0)) <= 0.0 or elapsed < float(record.best):
+		record["best"] = elapsed
+	record["first_date"] = record.get("first_date", Time.get_date_string_from_system())
+	record["last_date"] = Time.get_date_string_from_system()
+	records[key] = record
+	save_data["records"] = records
+	_add_badge("群山之上")
+	if falls == 0:
+		_add_badge("稳如磐石")
+	if chalk_charges > 0:
+		_add_badge("留有余力")
+	var completed: Dictionary = save_data.get("completed_routes", {})
+	completed[str(route_index)] = true
+	save_data["completed_routes"] = completed
+	if route_index == 2:
+		_add_badge("云海来客")
+	if play_style == "extreme":
+		_add_badge("孤峰行者")
+	var count: int = 0
+	for collected in save_data.get("collections", {}):
+		if str(collected).begins_with(str(Routes.IDS[route_index])):
+			count += 1
+	if count >= 6:
+		_add_badge("山路熟客")
+	elif count > 0:
+		_add_badge("另辟蹊径")
+	save_data["summits"] = int(save_data.get("summits", 0)) + 1
+	var best: float = float(save_data.get("best_time", 0.0))
+	if elapsed < best or best <= 0.0:
+		save_data["best_time"] = elapsed
+	if falls == 0:
+		save_data["clean_ascent"] = true
 	if play_style == "journey":
 		save_data["in_progress"] = false
 	_write_save()
@@ -1114,18 +1125,21 @@ func route_unlocked(index: int) -> bool:
 func extreme_unlocked() -> bool:
 	return bool(save_data.get("completed_routes", {}).get(str(route_index), false)) or (route_index == 0 and int(save_data.get("summits", 0)) > 0)
 
+func _normalize_play_style() -> void:
+	if play_style not in ["journey", "extreme"]:
+		play_style = "journey"
+
 func _build_selected_world() -> void:
+	_normalize_play_style()
 	if is_instance_valid(world):
 		remove_child(world)
 		world.free()
-	active_route = Routes.build(route_index, play_style, challenge_index)
+	active_route = Routes.build(route_index, play_style)
 	CHAPTERS.assign([
 		["起攀 · 松风营地", "林间 · 晨光岩台", "分岔 · 旧路足迹", "山脊 · 松涛渐远", "终点 · 松风岩脊"],
 		["起攀 · 峡谷入口", "横渡 · 两壁回声", "湿壁 · 飞瀑水汽", "出谷 · 天光渐近", "终点 · 回声峡谷"],
 		["起攀 · 雪岭营地", "岩阶 · 寒风初起", "山脊 · 阵风间隙", "云上 · 最后的攀登", "终点 · 云上孤峰"]
 	][route_index])
-	if play_style == "challenge":
-		CHAPTERS.assign([str(active_route.name), "观察 · 选择落点", "练习 · 调整姿态", "稳住 · 最后几步", "完成 · 岩段挑战"])
 	route_height = float(active_route.height)
 	world = WorldScript.new()
 	add_child(world)
@@ -1133,7 +1147,7 @@ func _build_selected_world() -> void:
 	for found in save_data.get("collections", {}):
 		world.mark_collectible_collected(str(found))
 	wind_strength = 0.0
-	sound.set_route_theme((1 if challenge_index > 0 else 0) if play_style == "challenge" else route_index)
+	sound.set_route_theme(route_index)
 	sound.set_wind_strength(0.0)
 	climber.setup(world.holds[0])
 	climber.set_outfit(outfit_index)
@@ -1147,16 +1161,9 @@ func select_route(index: int) -> void:
 	hud.refresh_buttons()
 
 func select_style(style: String) -> void:
-	if mode != "menu" or style not in ["journey", "challenge", "extreme"]:
+	if mode != "menu" or style not in ["journey", "extreme"]:
 		return
 	play_style = style
-	_build_selected_world()
-	hud.refresh_buttons()
-
-func select_challenge(index: int) -> void:
-	if mode != "menu":
-		return
-	challenge_index = clampi(index, 0, 2)
 	_build_selected_world()
 	hud.refresh_buttons()
 
@@ -1173,13 +1180,6 @@ func select_support(index: int) -> void:
 
 func chalk_capacity() -> int:
 	return 2 if play_style == "extreme" else 3
-
-func challenge_goal_text() -> String:
-	if play_style == "challenge":
-		return ["连续 5 次精准抓握并抵达终点 · 当前最佳 %d/5" % best_precise_streak, "不使用镁粉完成横渡 · 自动选脚，Q/E 可微调", "零跌落通过湿壁 · 镁粉防湿 18 秒"][challenge_index]
-	if play_style == "extreme":
-		return "极限登顶 · 每段 2 次镁粉 · 仅半山锚点 · 本地独立纪录"
-	return "观察分岔 · 绕行可休息 · 捷径需连攀"
 
 func terrain_hint() -> String:
 	var id: int = grip_id if grip_active else hovered_id
@@ -1250,9 +1250,6 @@ func journal_lines() -> Array[String]:
 				count += 1
 		lines.append("  山路记录 %d / 6 · 绕行与捷径各有三处足迹" % count)
 		lines.append("")
-	for i in range(3):
-		var record: Dictionary = records.get("challenge_%d" % i, {})
-		lines.append("挑战 · %s：%s" % [Routes.CHALLENGES[i], "等待挑战" if record.is_empty() else "完成 %d 次 · 最佳 %s" % [record.completions, time_string(float(record.best))]])
 	lines.append("")
 	lines.append("纪念章：" + ("尚未获得" if save_data.get("badges", {}).is_empty() else "、".join(save_data.get("badges", {}).keys())))
 	lines.append("配色：收集 2 份记录解锁松林绿，6 份记录解锁冰川蓝。")

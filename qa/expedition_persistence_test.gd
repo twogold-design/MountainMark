@@ -79,22 +79,6 @@ func _run() -> void:
 	verify(float(persisted.best_time) == 125.0 and bool(persisted.clean_ascent), "Migration preserves historical achievements")
 	var journey: Dictionary = progress(persisted)
 	game.mode = "menu"
-	game.play_style = "challenge"
-	game.challenge_index = 0
-	game.start_climb(false)
-	game.climber.set_process(false)
-	game.elapsed = 25.0
-	game.best_precise_streak = 10
-	game._save_progress()
-	verify(progress(read_disk()) == journey, "Challenge save attempt cannot overwrite journey file")
-	game._finish()
-	persisted = read_disk()
-	verify(progress(persisted) == journey, "Challenge completion preserves journey file")
-	verify(persisted.get("records",{}).has("challenge_0"), "Challenge result physically persisted")
-	verify(persisted.get("badges",{}).has("岩段练习生"), "Challenge badge physically persisted")
-	var cards: PackedStringArray = DirAccess.get_files_at(folder.path_join("postcards"))
-	verify(not cards.is_empty(), "Challenge writes isolated text postcard")
-	game.mode = "menu"
 	game.play_style = "extreme"
 	game.route_index = 0
 	game.start_climb(false)
@@ -106,9 +90,11 @@ func _run() -> void:
 	persisted = read_disk()
 	verify(progress(persisted) == journey, "Extreme completion preserves journey file")
 	verify(persisted.get("records",{}).has("ridge_extreme"), "Extreme independent record physically persisted")
+	var cards: PackedStringArray = DirAccess.get_files_at(folder.path_join("postcards"))
+	verify(not cards.is_empty(), "Extreme writes isolated text postcard")
 	await stop_game()
 	spawn_game()
-	verify(game.save_data.get("records",{}).has("challenge_0") and game.save_data.get("records",{}).has("ridge_extreme"), "Restart reads independent records")
+	verify(game.save_data.get("records",{}).has("ridge_extreme"), "Restart reads independent records")
 	game.start_climb(true)
 	game.climber.set_process(false)
 	verify(game.play_style == "journey" and game.climber.current_hold_id == anchor, "Restart resumes journey original anchor")

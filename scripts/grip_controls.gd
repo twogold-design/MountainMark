@@ -157,7 +157,7 @@ func _draw() -> void:
 	_balance_bar(Rect2(left + 20, top + 139, panel_width - 40, 13), (game.balance + 1.0) * 0.5, (game.balance_target + 1.0) * 0.5, game.balance_window * 0.5, balance_ready)
 	_text("已轻微修正落点 · 浅色小点是原始落点" if assisted else "靠近岩点会辅助抓稳，明显偏离仍会失手", left + 20, top + 172, 12, MINT if ready and assisted else MUTED)
 	_text("%s · 预计消耗 %.1f 握力" % ["已在一步范围内" if reach_ready else "身体移近后才能出手", game.hold_effort(game.grip_id, game.grip_hand, 0.65)], left + 20, top + 191, 11, MUTED)
-	_text("向后拉 → 绿色时松开%s键" % ("左" if game.grip_hand == 0 else "右"), left + 20, top + 215, 13, MINT if ready else PAPER)
+	_text("向后拉 → 绿色时松开%s" % game.grip_button_name(), left + 20, top + 215, 13, MINT if ready else PAPER)
 	if game.slip_streak > 0:
 		_text("失手 %d / 3" % game.slip_streak, left + panel_width - 92, top + 215, 12, GOLD)
 
