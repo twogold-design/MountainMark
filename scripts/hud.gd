@@ -156,9 +156,9 @@ func _draw_menu(w: float, h: float) -> void:
 	else:
 		var info: Dictionary = game.route_info()
 		_text(str(info.get("subtitle", "")), 64, 628, 23)
-		_text("选择支撑脚 · 观察岩面 · 把握出手时机", 64, 662, 15, MUTED)
+		_text("点住目标向后拉 · 绿色时松手 · 身体自动找稳", 64, 662, 15, MUTED)
 	_rule(64, h - 183, w - 128)
-	_text("戴上耳机，听见山的呼吸。", 64, h - 42, 14, MUTED)
+	_text("戴上耳机，听见山的呼吸。  【·】精简界面，保留操作提示", 64, h - 42, 14, MUTED)
 	_text("所有旅程与纪念都保存在本机", w - 315, h - 42, 14, MUTED)
 
 func _draw_journal(w: float, h: float) -> void:
@@ -231,6 +231,9 @@ func _draw_game(w: float, h: float) -> void:
 				continue
 			var hover: bool = id == game.hovered_id
 			var selected: bool = game.grip_active and id == game.grip_id
+			if selected:
+				# The live drag overlay owns this rock's target and landing labels.
+				continue
 			var preview: bool = id == game.preview_id
 			var branch: String = str(hold.get("branch", "main"))
 			var branch_color: Color = MINT if branch == "safe" else (Color("f0a06a") if branch == "shortcut" else PAPER)
@@ -256,9 +259,9 @@ func _draw_game(w: float, h: float) -> void:
 				var hover_x: float = clampf(p.x + 29.0, 25.0, w - 300.0)
 				var reach_status: String = "当前可达" if in_reach else "先移重心，再出手"
 				if not bool(reach_info.support_ok):
-					reach_status = "先按 Q / E 选择支撑脚"
+					reach_status = "点击后会自动选支撑脚"
 				var effort: float = game.hold_effort(id, int(reach_info.hand), 0.65)
-				_text(reach_status + " · 按住鼠标准备", hover_x, p.y - 31, 13, color)
+				_text(reach_status + " · 点住岩点，向后回拉", hover_x, p.y - 31, 13, color)
 				_text("预计消耗 %.1f 握力" % effort, hover_x, p.y - 10, 12, MUTED)
 		if not game.climber.moving:
 			_draw_foot_labels(w, h)
@@ -281,7 +284,7 @@ func _draw_game(w: float, h: float) -> void:
 		draw_rect(Rect2(56 + i * 10.7, h - 116, 7.5, 13), color if filled else Color(0.8, 0.9, 0.85, 0.13))
 	var status: String = "稳住呼吸，寻找下一处岩点"
 	if game.grip_active:
-		status = "准备中 · 先确认支撑与双区"
+		status = "沿淡线向后拉 · 绿色时松手"
 	elif game.climber.moving:
 		status = "踩稳  ·  蹬腿  ·  伸手"
 	elif game.current_rest:
@@ -294,8 +297,8 @@ func _draw_game(w: float, h: float) -> void:
 		status = "握力告急  ·  空格使用镁粉"
 	_text(status, 56, h - 79, 13, color)
 	_panel(Rect2(360, h - 119, w - 396, 83), 0.74)
-	_text("先选支撑脚 → A / D 移重心 → 按住鼠标，双区就绪后蹬腿伸手", 375, h - 81, 15, PAPER)
-	_text("W 观察 · 中键 / Z X 读线 · Q / E 选脚 · 空格 镁粉 · R 返回 · Esc 暂停", 375, h - 52, 13, MUTED)
+	_text("点住岩点 → 沿淡线向后拉 → 绿色时松手 · 身体自动找稳", 375, h - 81, 15, PAPER)
+	_text("W 观察 · 中键/Z X 读线 · Q/E 选脚 · 空格 镁粉 · R 返回 · Esc 暂停 · 【·】界面", 375, h - 52, 13, MUTED)
 	if game.play_style != "journey":
 		_text(game.time_string(game.elapsed), w - 128, 168, 21, PAPER)
 	_draw_support_card()
@@ -306,13 +309,11 @@ func _draw_game(w: float, h: float) -> void:
 	if game.play_style == "challenge":
 		_panel(Rect2(36, 468, 310, 85), 0.75)
 		_wrapped(game.challenge_goal_text(), 55, 496, 270, 13, 21, GOLD)
-	if game.grip_active:
-		_draw_grip_controls(w, h)
-	elif game.mode == "playing" and not game.climber.moving:
+	if not game.grip_active and game.mode == "playing" and not game.climber.moving:
 		_panel(Rect2(370, h - 197, w - 406, 58), 0.56)
 		var hint: String = "W 标记目标；中键 / Z X 读线。青圈当前可达，金圈先按 A / D 移重心。"
 		if game.current_rest:
-			hint = "在休息岩台恢复握力。选好路线，再按住鼠标准备下一步。"
+			hint = "在休息岩台恢复握力。选好路线，再点住目标向后回拉。"
 		if game.slip_streak > 0:
 			hint = "连续失手 %d / 3 · 稳住重心再松手，第三次将触发安全绳。" % game.slip_streak
 		if game.preview_id >= 0 and game.camera_reading:
@@ -322,7 +323,7 @@ func _draw_game(w: float, h: float) -> void:
 
 func _draw_support_card() -> void:
 	_panel(Rect2(36, 153, 310, 302), 0.78)
-	_text("支撑脚  /  先踩稳，再发力", 55, 178, 13, GOLD)
+	_text("支撑脚  /  自动踩稳，Q/E 可切换", 55, 178, 13, GOLD)
 	var support: int = int(game.selected_support)
 	for i: int in range(2):
 		var left: float = 55.0 + float(i) * 140.0
@@ -333,7 +334,7 @@ func _draw_support_card() -> void:
 		_text("Q" if i == 0 else "E", left + 11, 224, 26, accent)
 		_text("左脚" if i == 0 else "右脚", left + 47, 214, 17, accent)
 		_text("支撑中" if selected else ("待选" if support < 0 else "可移动"), left + 47, 237, 12, accent)
-	var support_text: String = "自动落脚 · 按 Q / E 指定支撑脚"
+	var support_text: String = "需要时自动选脚 · Q/E 可手动切换"
 	if support >= 0:
 		support_text = "左脚踩稳 · 右脚可移动" if support == 0 else "右脚踩稳 · 左脚可移动"
 	_text(support_text, 55, 273, 14, MINT if support >= 0 else MUTED)
@@ -422,54 +423,6 @@ func _draw_route_sketch(w: float) -> void:
 	draw_circle(start, 5, PAPER)
 	draw_circle(finish, 5, GOLD)
 	_text("汇合", finish.x + 13, finish.y + 5, 12, GOLD)
-func _skill_bar(rect: Rect2, value: float, target: float, window: float, aligned: bool) -> void:
-	draw_rect(rect, Color(0.70, 0.83, 0.81, 0.12))
-	var band_left: float = clampf(target - window, 0.0, 1.0)
-	var band_right: float = clampf(target + window, 0.0, 1.0)
-	var band: Rect2 = Rect2(rect.position + Vector2(rect.size.x * band_left, 0), Vector2(rect.size.x * (band_right - band_left), rect.size.y))
-	draw_rect(band, Color(MINT, 0.52 if aligned else 0.28))
-	draw_rect(band, Color(MINT, 0.85), false, 1.0)
-	var target_x: float = rect.position.x + rect.size.x * target
-	draw_line(Vector2(target_x, rect.position.y + 2), Vector2(target_x, rect.end.y - 2), Color(MINT, 0.7), 1.0)
-	var cursor_x: float = rect.position.x + rect.size.x * clampf(value, 0.0, 1.0)
-	var cursor_color: Color = PAPER
-	draw_line(Vector2(cursor_x, rect.position.y - 4), Vector2(cursor_x, rect.end.y + 4), cursor_color, 3.0, true)
-	draw_colored_polygon(PackedVector2Array([Vector2(cursor_x - 4, rect.position.y - 9), Vector2(cursor_x + 4, rect.position.y - 9), Vector2(cursor_x, rect.position.y - 4)]), cursor_color)
-
-func _draw_grip_controls(w: float, h: float) -> void:
-	var panel_width: float = minf(490.0, w - 410.0)
-	var left: float = w - panel_width - 130.0
-	var top: float = h - 380.0
-	var ready: bool = game.grip_ready()
-	var power_ready: bool = absf(game.grip_power - game.grip_target) <= game.grip_window
-	var reach_ready: bool = game.grip_reach_ready()
-	var balance_ready: bool = absf(game.balance - game.balance_target) <= game.balance_window and reach_ready
-	var remaining: float = maxf(0.0, 4.5 - game.grip_time)
-	_panel(Rect2(left, top, panel_width, 232), 0.93)
-	var hand: String = "左手" if game.grip_hand == 0 else "右手"
-	var grip_hold: Dictionary = game._hold(game.grip_id)
-	var foot: int = int(grip_hold.get("support", -1))
-	var heading: String = "双区就绪 · 现在松开" if ready else hand + " · 稳住，等待出手"
-	if foot >= 0 and game.selected_support != foot:
-		heading = "先按 " + ("Q 选左脚支撑" if foot == 0 else "E 选右脚支撑")
-	elif not reach_ready:
-		heading = "还够不到 · 先按 A / D 移重心"
-	elif str(grip_hold.get("kind", "")) == "wind" and game.wind_strength >= 0.72:
-		heading = "阵风正强 · 等待风弱"
-	_text(heading, left + 20, top + 28, 19, MINT if ready else PAPER)
-	_text("%.1f 秒" % remaining, left + panel_width - 82, top + 27, 15, Color("ee896e") if remaining < 1.0 else MUTED)
-	_rule(left + 20, top + 40, panel_width - 40, Color(MINT if ready else MUTED, 0.2))
-	_text("蓄力  /  等待白针进入绿区", left + 20, top + 62, 13, MUTED)
-	_text("已对准" if power_ready else "等待时机", left + panel_width - 88, top + 62, 13, MINT if power_ready else GOLD)
-	_skill_bar(Rect2(left + 20, top + 76, panel_width - 40, 13), game.grip_power, game.grip_target, game.grip_window, power_ready)
-	_text("重心  /  按住 A 左移 · D 右移", left + 20, top + 116, 13, MUTED)
-	_text("已对准" if balance_ready else ("调整重心" if reach_ready else "尚未可达"), left + panel_width - 88, top + 116, 13, MINT if balance_ready else GOLD)
-	_skill_bar(Rect2(left + 20, top + 130, panel_width - 40, 13), (game.balance + 1.0) * 0.5, (game.balance_target + 1.0) * 0.5, game.balance_window * 0.5, balance_ready)
-	_text("%s · 预计消耗 %.1f 握力" % ["已在一步范围内" if reach_ready else "身体移近后才能出手", game.hold_effort(game.grip_id, game.grip_hand, 0.65)], left + 20, top + 172, 13, MINT if reach_ready else GOLD)
-	_text("松开%s键抓牢 · 可达且双区都要对准" % ("左" if game.grip_hand == 0 else "右"), left + 20, top + 211, 13, MINT if ready else PAPER)
-	if game.slip_streak > 0:
-		_text("失手 %d / 3" % game.slip_streak, left + panel_width - 92, top + 211, 12, GOLD)
-
 func _draw_fall(w: float, h: float) -> void:
 	var fade: float = clampf(game.fall_time / 0.3, 0.0, 1.0)
 	draw_rect(Rect2(0, 0, w, h), Color(0.025, 0.045, 0.055, 0.76 * fade))
@@ -546,9 +499,9 @@ func _draw_help(w: float, h: float) -> void:
 	_rule(left, 215, 780)
 	var rows: Array = [
 		["01", "读线，找到下一步", "W 标记目标；中键 / Z X 转镜头。青圈当前可达，金圈需移重心。"],
-		["02", "先选支撑脚，再移重心", "Q / E 选左 / 右脚踩稳；A / D 移近目标，侧栏和脚边标签显示支撑脚。"],
-		["03", "蹬腿伸手，双区就绪再松手", "左 / 右键选手；同侧手脚向侧上方可折膝侧伸，正上方高点用屈膝高踩。"],
-		["04", "把握 4.5 秒", "超时或未对准会失手并扣握力；连续三次失手由安全绳保护。"],
+		["02", "身体会自动找稳", "需要时自动选支撑脚，身体缓慢站稳；Q / E 可换脚，A / D 随时微调。折膝与高踩动作保留。"],
+		["03", "向后回拉，绿色时松手", "点住岩点并沿淡线回拉；接近岩点时会辅助修正落点，明显方向或力度错误仍会偏离。"],
+		["04", "轻点可取消，别着急", "轻点或极短拖拽松手可无损取消；有 7 秒时间调整，身体站稳且落点变绿再松手。"],
 		["05", "观察岩面与天气", "小岩点要连贯通过；湿壁可用空格镁粉防滑，阵风时等待风弱。"],
 		["06", "把路留在日志里", "金色岩点恢复握力；R 返回锚点。探索分支与观景点，抵达山顶。"]
 	]
@@ -557,7 +510,7 @@ func _draw_help(w: float, h: float) -> void:
 		_text(rows[i][0], left, y, 20, GOLD)
 		_text(rows[i][1], left + 59, y, 21)
 		_wrapped(rows[i][2], left + 59, y + 28, 721, 15, 21, MUTED)
-	_text("Esc 暂停   /   M 声音   /   F11 全屏     ·     进度保存在游戏目录", left, 748, 14, MUTED)
+	_text("Esc 暂停  /  M 声音  /  F11 全屏  /  【·】精简界面，保留操作提示", left, 748, 14, MUTED)
 
 func _button(label: String, rect: Rect2, callback: Callable, primary: bool = false, locked: bool = false) -> void:
 	var button: Button = Button.new()

@@ -8,6 +8,7 @@ func _initialize() -> void:
 func capture(label: String, close: bool = false) -> void:
 	game.toast_time = 0.0
 	game.hud.refresh_buttons()
+	game._sync_ui_visibility()
 	game.hud.queue_redraw()
 	if not close:
 		game._camera_ready = false
@@ -53,7 +54,8 @@ func run() -> void:
 	game.climber.set_lean(game.balance)
 	game._refresh_grip_geometry()
 	game.grip_time = 1.0
-	game.grip_power = game.grip_target
+	var aim: Dictionary = game.get_drag_aim_info()
+	game.set_grip_drag(Vector2(aim.drag_anchor) - (Vector2(aim.target_screen) - Vector2(aim.origin_screen)) / float(game.DRAG_AMPLIFICATION))
 	await capture("ready")
 	game._cancel_grip()
 	for style: int in range(3):

@@ -20,6 +20,8 @@ func lean(value: float) -> void:
 	game.climber.set_lean(value)
 	game._refresh_grip_geometry()
 	game._update_reachable()
+	if game.grip_active:
+		make_pulse_ready()
 
 func edge(dx: float = 0.9, dy: float = 2.17, support: int = -1) -> void:
 	game.mode = "playing"
@@ -44,8 +46,8 @@ func actual_shoulders_match() -> bool:
 	return game.climber.get_body_position().is_equal_approx(game.climber._torso.position)
 
 func make_pulse_ready() -> void:
-	game.grip_time = 1.0
-	game.grip_power = game.grip_target
+	var aim: Dictionary = game.get_drag_aim_info()
+	game.set_grip_drag(Vector2(aim.drag_anchor) - (Vector2(aim.target_screen) - Vector2(aim.origin_screen)) / game.DRAG_AMPLIFICATION)
 
 func run() -> void:
 	var isolated: String = ProjectSettings.globalize_path("res://.runtime/reach-geometry-data")

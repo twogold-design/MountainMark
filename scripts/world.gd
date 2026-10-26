@@ -3,6 +3,7 @@ const TerrainMaterials = preload("res://scripts/terrain_materials.gd")
 ## Original alpine tower built from local procedural meshes.
 var holds: Array[Dictionary] = []
 var _rings: Array[MeshInstance3D] = []
+var _feedback_visible: bool = true
 var _materials: Array[StandardMaterial3D] = []
 var _clouds: Array[Node3D] = []
 var _flags: Array[MeshInstance3D] = []
@@ -486,16 +487,26 @@ func _flag(pos: Vector3, height: float, color: Color) -> void:
 	add_child(flag)
 	_flags.append(flag)
 
+func set_feedback_visible(value: bool) -> void:
+	if _feedback_visible == value:
+		return
+	_feedback_visible = value
+	if not value:
+		for i in range(holds.size()):
+			_rings[i].hide()
+			_materials[i].albedo_color = _hold_color(holds[i])
+			_materials[i].emission_energy_multiplier = 0.08
+
 func set_hold_feedback(reachable_ids: Array, selected_id: int, used_id: int) -> void:
 	for i in range(holds.size()):
 		var reachable: bool = reachable_ids.has(i)
 		var selected: bool = i == selected_id
 		var used: bool = i == used_id
-		_rings[i].visible = reachable or selected
+		_rings[i].visible = _feedback_visible and (reachable or selected)
 		_rings[i].scale = Vector3.ONE * (1.25 if selected else 1.0)
 		var base_color: Color = _hold_color(holds[i])
-		_materials[i].albedo_color = Color("8fcdba") if used else (Color("fff5cc") if selected else base_color)
-		_materials[i].emission_energy_multiplier = 0.5 if selected else (0.20 if reachable else 0.08)
+		_materials[i].albedo_color = (Color("8fcdba") if used else (Color("fff5cc") if selected else base_color)) if _feedback_visible else base_color
+		_materials[i].emission_energy_multiplier = (0.5 if selected else (0.20 if reachable else 0.08)) if _feedback_visible else 0.08
 
 func update_atmosphere(progress: float, delta: float) -> void:
 	_elapsed += delta

@@ -6,11 +6,17 @@ func _initialize() -> void:
 func capture(label: String) -> void:
 	game.toast_time = 0.0
 	game.hud.refresh_buttons()
+	game._sync_ui_visibility()
 	game.hud.queue_redraw()
 	await process_frame
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png("res://qa/hud-v3-actual-" + label + ".png")
 	print("CAPTURE ", label)
+func aim_current_grip() -> void:
+	game.climber.set_lean(game.balance)
+	game._refresh_grip_geometry()
+	var aim: Dictionary = game.get_drag_aim_info()
+	game.set_grip_drag(Vector2(aim.drag_anchor) - (Vector2(aim.target_screen) - Vector2(aim.origin_screen)) / float(game.DRAG_AMPLIFICATION))
 func position_at(hold: Dictionary) -> void:
 	game.climber.setup(hold)
 	game.climber.set_process(false)
@@ -58,12 +64,14 @@ func run() -> void:
 	game.start_climb(false)
 	position_at(game.world.holds[0])
 	game.attempt_hold(1, 0)
-	game.grip_power = game.grip_target
 	game.balance = game.balance_target
 	game.grip_time = 0.6
+	aim_current_grip()
 	assert(not game.grip_ready())
 	await capture("support")
 	game.select_support(int(game._hold(1).support))
+	game.balance = game.balance_target
+	aim_current_grip()
 	assert(game.grip_ready())
 	await capture("support-ready")
 	game._on_fell("qa")
@@ -80,9 +88,9 @@ func run() -> void:
 			game.attempt_hold(int(hold.id), 1)
 			break
 	game.wind_strength = 0.91
-	game.grip_power = game.grip_target
 	game.balance = game.balance_target
 	game.grip_time = 0.6
+	aim_current_grip()
 	await capture("wind")
 	game.toggle_pause()
 	await capture("extreme-paused")

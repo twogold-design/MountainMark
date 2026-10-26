@@ -43,12 +43,13 @@ func run() -> void:
 	var id: int = game.preview_id
 	game.select_support(int(game._hold(id).get("support", -1)))
 	var hand: int = game.recommended_hand(id)
+	game._update_camera(1.0)
 	game.attempt_hold(id, hand)
 	game.balance = game.balance_target
 	game.climber.set_lean(game.balance)
 	game._refresh_grip_geometry()
-	game.grip_time = 1.0
-	game.grip_power = game.grip_target
+	var aim: Dictionary = game.get_drag_aim_info()
+	game.set_grip_drag(Vector2(aim.drag_anchor) - (Vector2(aim.target_screen) - Vector2(aim.origin_screen)) / game.DRAG_AMPLIFICATION)
 	verify(game.grip_ready(), "packaged geometry accepts a properly supported grip")
 	game._release_grip(hand)
 	verify(game.climber.moving, "packaged grip starts a real climb")

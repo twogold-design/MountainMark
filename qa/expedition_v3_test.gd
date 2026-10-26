@@ -86,17 +86,19 @@ func controller_axis() -> float:
 	return clampf((game.balance_target - game.balance) * 14.0, -1.0, 1.0)
 
 func prepare(id: int, hand: int) -> bool:
+	game._update_camera(1.0)
 	game.attempt_hold(id, hand)
 	if not game.grip_active:
 		return false
 	for step in range(440):
 		tick(0.01, controller_axis())
+		if game.grip_active:
+			var aim: Dictionary = game.get_drag_aim_info()
+			game.set_grip_drag(Vector2(aim.drag_anchor) - (Vector2(aim.target_screen) - Vector2(aim.origin_screen)) / game.DRAG_AMPLIFICATION)
 		if game.mode != "playing" or not game.grip_active:
 			return false
-		var power_error: float = absf(game.grip_power - game.grip_target) / game.grip_window
-		var balance_error: float = absf(game.balance - game.balance_target) / game.balance_window
-		var quality: float = 1.0 - power_error * 0.55 - balance_error * 0.45
-		if game.grip_ready() and quality >= target_quality and (target_quality >= 0.9 or quality <= target_quality + 0.06):
+		var quality: float = game.grip_quality()
+		if game.grip_ready() and quality >= target_quality:
 			return true
 	return false
 

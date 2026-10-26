@@ -28,9 +28,15 @@ func mount_game() -> void:
 
 func release_when_ready(hand: int) -> bool:
 	for tick in range(440):
+		if not game.grip_active:
+			return false
 		var difference: float = float(game.balance_target) - float(game.balance)
 		var axis: float = signf(difference) if absf(difference) > 0.012 else 0.0
 		game._tick_control(0.01, axis)
+		if not game.grip_active:
+			return false
+		var aim: Dictionary = game.get_drag_aim_info()
+		game.set_grip_drag(Vector2(aim.drag_anchor) - (Vector2(aim.target_screen) - Vector2(aim.origin_screen)) / float(game.DRAG_AMPLIFICATION))
 		if game.grip_ready():
 			game._release_grip(hand)
 			return game.climber.moving

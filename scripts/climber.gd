@@ -25,6 +25,9 @@ var _motion_drop: float = 0.0
 var _motion_drop_foot: float = 0.0
 var _move_start_drop: float = 0.0
 var _stance_weight: float = 0.0
+var _charge_preparation: float = 0.0
+var _charge_target: float = 0.0
+var _move_start_charge: float = 0.0
 var _support_feedback_visible: bool = true
 var _support_marker: MeshInstance3D
 var _support_material: StandardMaterial3D
@@ -36,6 +39,7 @@ var _fabric_color: ImageTexture
 var _fabric_normal: ImageTexture
 var climbing: bool = false
 var moving: bool = false
+var miss_reaching: bool = false
 var current_hold_id: int = 0
 var checkpoint_position: Vector3 = Vector3(0, 1, 0.45)
 var checkpoint_hold_id: int = 0
@@ -59,6 +63,12 @@ var _effort_sent: bool = false
 var _contact_pending: bool = false
 var _move_start_lean: float = 0.0
 var _move_duration: float = 0.90
+var _miss_hand: int = 0
+var _miss_time: float = 0.0
+var _miss_duration: float = 0.68
+var _miss_origin: Vector3 = Vector3.ZERO
+var _miss_target: Vector3 = Vector3.ZERO
+var _miss_return_hand: Vector3 = Vector3.ZERO
 # Distance pacing for duration and the first plant only; never repeat foot swings.
 var _step_count: int = 1
 var _time: float = 0.0
@@ -98,11 +108,14 @@ func setup(start_hold: Dictionary) -> void:
 
 func climb_to(hold: Dictionary, hand: int = -1, effort: float = 4.0) -> bool:
 	var move_cost: float = maxf(0.0, effort)
-	if moving or summit_mode or stamina < move_cost or not climbing:
+	if moving or miss_reaching or summit_mode or stamina < move_cost or not climbing:
+		return false
+	var selected_hand: int = 1 - _last_hand if hand < 0 else clampi(hand, 0, 1)
+	if hold.has("contact_position") and not can_grip_contact(hold, selected_hand, hold.contact_position):
 		return false
 	_target = hold.duplicate()
 	var target: Vector3 = hold.get("position", _reach)
-	_hand = 1 - _last_hand if hand < 0 else clampi(hand, 0, 1)
+	_hand = selected_hand
 	_last_hand = _hand
 	_old_body = _body
 	_move_start_drop = stance_drop_weight(_lean)
@@ -114,7 +127,9 @@ func climb_to(hold: Dictionary, hand: int = -1, effort: float = 4.0) -> bool:
 	_feet = _old_feet.duplicate()
 	var side: float = -1.0 if _hand == 0 else 1.0
 	_new_body = target + Vector3(-side * 0.14, -0.72, 0.49)
-	_new_hands[_hand] = target + Vector3(0, 0, 0.025)
+	# The throw lands at the player's real contact, even when it is off-centre.
+	# Keep the destination stance and hold identity anchored to the authored rock.
+	_new_hands[_hand] = hold.get("contact_position", target + Vector3(0, 0, 0.025))
 	_new_hands[1 - _hand] = target + Vector3(-side * 0.48, -0.32, 0.01)
 	_new_feet[0] = _new_body + Vector3(-0.19, -0.92, -0.28)
 	_new_feet[1] = _new_body + Vector3(0.19, -0.88, -0.28)
@@ -139,10 +154,50 @@ func climb_to(hold: Dictionary, hand: int = -1, effort: float = 4.0) -> bool:
 	_contact_pending = true
 	_move_start_lean = _lean
 	_move_start_drop = stance_drop_weight(_lean)
+	_move_start_charge = _charge_preparation
+	_charge_target = 0.0
 	_motion_drop = _move_start_drop
 	moving = true
 	stamina = maxf(0.0, stamina - move_cost)
 	return true
+
+func can_grip_contact(hold: Dictionary, hand: int, point: Vector3) -> bool:
+	if not point.is_finite():
+		return false
+	var selected_hand: int = 1 - _last_hand if hand < 0 else clampi(hand, 0, 1)
+	var side: float = -1.0 if selected_hand == 0 else 1.0
+	var target: Vector3 = hold.get("position", _reach)
+	var support_shift: float = (-0.045 if support_foot == 0 else 0.045) if support_foot >= 0 else 0.0
+	# Arrival is the real neutral stance on this hold, including the selected
+	# foot's hip shift. Never move an off-centre throw to satisfy the arm limit.
+	var shoulder: Vector3 = target + Vector3(side * 0.085 + support_shift, -0.50, 0.47)
+	return shoulder.distance_to(point) <= ARM_REACH
+
+func miss_grip(target_position: Vector3, hand: int, duration: float = 0.68) -> bool:
+	if moving or miss_reaching or summit_mode or not climbing or not _built or not target_position.is_finite():
+		return false
+	_miss_hand = 1 - _last_hand if hand < 0 else clampi(hand, 0, 1)
+	_miss_origin = _gloves[_miss_hand].position
+	_miss_return_hand = _hands[_miss_hand]
+	_miss_target = target_position
+	_miss_time = 0.0
+	_miss_duration = clampf(duration, 0.20, 1.20) if is_finite(duration) else 0.68
+	_charge_target = 0.0
+	_contact_pending = false
+	miss_reaching = true
+	return true
+
+func _advance_miss(delta: float) -> void:
+	_miss_time += delta
+	var p: float = clampf(_miss_time / _miss_duration, 0.0, 1.0)
+	var stretch: float = smoothstep(0.0, 0.46, p) * (1.0 - smoothstep(0.56, 1.0, p))
+	_hands[_miss_hand] = _miss_origin.lerp(_miss_target, stretch)
+	# Lift away from the wall once on the way out and once on the return.
+	# _update_pose applies the normal physical arm limit to the entire attempt.
+	_hands[_miss_hand].z += sin(stretch * PI) * 0.10
+	if p >= 1.0:
+		_hands[_miss_hand] = _miss_return_hand
+		miss_reaching = false
 
 func get_reach_origin() -> Vector3:
 	return _reach
@@ -153,6 +208,8 @@ func get_body_position() -> Vector3:
 func get_motion_name() -> String:
 	if summit_mode:
 		return "翻越山顶"
+	if miss_reaching:
+		return "伸手落空"
 	if moving:
 		if _searching_move:
 			return "探点落手"
@@ -207,12 +264,12 @@ func get_shoulder_position(hand: int, lean_value: float = 2.0) -> Vector3:
 	return body_transform_at(_lean if lean_value > 1.0 else lean_value) * Vector3(side * 0.225, 0.22, -0.02)
 
 func rest(delta: float) -> void:
-	if not moving:
+	if not moving and not miss_reaching:
 		stamina = minf(100.0, stamina + delta * 23.0)
 		_fall_sent = false
 
 func chalk() -> bool:
-	if moving or summit_mode or not climbing or _chalk_cooldown > 0.0:
+	if moving or miss_reaching or summit_mode or not climbing or _chalk_cooldown > 0.0:
 		return false
 	_chalk_cooldown = 7.0
 	_chalk_time = 0.95
@@ -221,6 +278,8 @@ func chalk() -> bool:
 
 func recover() -> void:
 	_contact_pending = false
+	miss_reaching = false
+	_miss_time = 0.0
 	_reach = checkpoint_position
 	current_hold_id = checkpoint_hold_id
 	_body = _reach + Vector3(0.10, -0.72, 0.49)
@@ -244,6 +303,9 @@ func recover() -> void:
 	_motion_drop_foot = 0.0
 	_move_start_drop = 0.0
 	_stance_weight = 1.0 if support_foot >= 0 else 0.0
+	_charge_preparation = 0.0
+	_charge_target = 0.0
+	_move_start_charge = 0.0
 	_lean = 0.0
 	_lean_target = 0.0
 	_target.clear()
@@ -254,6 +316,10 @@ func recover() -> void:
 
 func celebrate(summit_position: Vector3 = Vector3.ZERO) -> void:
 	_contact_pending = false
+	if miss_reaching:
+		_hands[_miss_hand] = _miss_return_hand
+	miss_reaching = false
+	_miss_time = 0.0
 	moving = false
 	summit_mode = true
 	_motion_turn = 0.0
@@ -262,6 +328,9 @@ func celebrate(summit_position: Vector3 = Vector3.ZERO) -> void:
 	_motion_drop = 0.0
 	_motion_drop_foot = 0.0
 	_move_start_drop = 0.0
+	_charge_preparation = 0.0
+	_charge_target = 0.0
+	_move_start_charge = 0.0
 	_summit_floor = summit_position if summit_position != Vector3.ZERO else _reach + Vector3(0, 1.95, -1.25)
 	_summit_time = 0.0
 	_chalk_time = 0.0
@@ -276,13 +345,29 @@ func celebrate(summit_position: Vector3 = Vector3.ZERO) -> void:
 	stamina = 100.0
 
 func set_lean(value: float) -> void:
+	if miss_reaching:
+		return
 	_lean_target = clampf(value, -1.0, 1.0)
 	# Input already moves continuously. Rendering and reach must use the same pose.
 	_lean = _lean_target
 	if _built:
 		_update_pose()
 
+func set_charge_preparation(value: float) -> void:
+	_charge_target = clampf(value, 0.0, 1.0) if climbing and not moving and not miss_reaching and not summit_mode else 0.0
+
+func _charge_pose_weight() -> float:
+	if moving:
+		# Carry the loaded knee/elbow planes into the push instead of snapping to
+		# the uncharged pose when the mouse button is released.
+		var plant: float = 0.30 / float(_step_count)
+		var p: float = clampf(_move_time / _move_duration, 0.0, 1.0)
+		return _move_start_charge * (1.0 - smoothstep(0.0, plant, p))
+	return _charge_preparation if climbing and not summit_mode else 0.0
+
 func set_support_foot(index: int) -> void:
+	if miss_reaching:
+		return
 	# Snapshot on climb_to so changing the next foothold cannot pop an active pose.
 	support_foot = clampi(index, -1, 1)
 	if not moving:
@@ -307,6 +392,7 @@ func _process(delta: float) -> void:
 	_time += delta
 	_chalk_cooldown = maxf(0.0, _chalk_cooldown - delta)
 	_chalk_time = maxf(0.0, _chalk_time - delta)
+	_charge_preparation = move_toward(_charge_preparation, _charge_target, delta * 4.0)
 	if summit_mode:
 		_summit_time += delta
 		# Pull vertically past the lip, then step onto the top before raising arms.
@@ -327,6 +413,8 @@ func _process(delta: float) -> void:
 	elif moving:
 		_advance_move(delta)
 	elif climbing:
+		if miss_reaching:
+			_advance_miss(delta)
 		_stance_weight = move_toward(_stance_weight, 1.0 if support_foot >= 0 else 0.0, delta * 5.0)
 		stamina = maxf(0.0, stamina - delta * (0.38 + maxf(0.0, terrain_drain)))
 		if stamina <= 0.0 and not _fall_sent:
@@ -336,7 +424,7 @@ func _process(delta: float) -> void:
 	_try_hand_contact()
 
 func _try_hand_contact() -> void:
-	if not _contact_pending or summit_mode or not climbing or _move_time < _move_duration * 0.5:
+	if not _contact_pending or miss_reaching or summit_mode or not climbing or _move_time < _move_duration * 0.5:
 		return
 	# The rendered palm includes the physical arm constraint, so raw hand timing
 	# alone must not trigger the contact before the arm actually reaches the rock.
@@ -430,6 +518,7 @@ func _advance_move(delta: float) -> void:
 func _update_pose() -> void:
 	_torso.transform = body_transform_at(_lean)
 	var visual_body: Vector3 = _torso.position
+	var charge: float = smoothstep(0.0, 1.0, _charge_pose_weight())
 	_head.rotation.y = sin(_time * 0.5) * 0.07
 	for i in range(2):
 		var side: float = -1.0 if i == 0 else 1.0
@@ -439,7 +528,8 @@ func _update_pose() -> void:
 			palm = palm.lerp(visual_body + Vector3(0.30, -0.24, 0.30), sin((1.0 - _chalk_time / 0.95) * PI))
 		# Keep the continuous reach inside the same physical arm length as idle poses.
 		palm = shoulder + (palm - shoulder).limit_length(ARM_REACH)
-		var elbow: Vector3 = _joint(shoulder, palm, 0.34, 0.38, Vector3(side * 0.75, -0.45, 0.5))
+		# Tighten the elbows while loading without shifting the palm or shoulder.
+		var elbow: Vector3 = _joint(shoulder, palm, 0.34, 0.38, Vector3(side * (0.75 - charge * 0.10), -0.45 - charge * 0.16, 0.5))
 		_segment(_upper_arms[i], shoulder, elbow)
 		_segment(_forearms[i], elbow, palm)
 		_elbows[i].position = elbow
@@ -471,7 +561,11 @@ func _update_pose() -> void:
 		var leg_axis: Vector3 = (ankle - hip).normalized()
 		var bend_plane: Vector3 = (regular_bend - leg_axis * regular_bend.dot(leg_axis)).normalized()
 		var knee_weight: float = drop * lerpf(0.20, 1.0, raised_step)
-		var knee_bend: Vector3 = bend_plane.rotated(leg_axis, -side * 1.45 * knee_weight)
+		# Load the knee plane with the toes planted. Only the joint plane changes:
+		# real shoulder/hip positions, contact points and leg lengths remain shared
+		# with reach queries. Keep an existing drop-knee fold in full control.
+		var load_turn: float = charge * (0.25 if i == loaded_foot else 0.12) * (1.0 - drop)
+		var knee_bend: Vector3 = bend_plane.rotated(leg_axis, -side * (1.45 * knee_weight + load_turn))
 		var knee: Vector3 = _joint(hip, ankle, 0.43, 0.44, knee_bend)
 		_segment(_thighs[i], hip, knee)
 		_segment(_shins[i], knee, ankle)
