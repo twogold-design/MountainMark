@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>山痕 · Mountain Mark</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0c1c24;color:#e9e4d7;font-family:"Microsoft YaHei",sans-serif}body{display:grid;place-items:center}canvas{display:block;width:min(100vw,160vh);height:min(62.5vw,100vh);outline:0}#cover{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(ellipse at 72% 25%,#31505b 0%,#172e38 40%,#0b1922 90%)}.panel{width:min(420px,88vw);padding:40px 24px;text-align:center}.eyebrow{color:#c7aa70;font-size:12px;letter-spacing:5px}h1{font-weight:500;font-size:clamp(40px,8vw,70px);letter-spacing:12px;margin:22px 0 40px}button{border:1px solid #d8bc83;background:#d8bc83;color:#172b32;padding:15px 32px;font-size:16px;cursor:pointer}button:disabled{opacity:.55;cursor:wait}button:focus-visible{outline:3px solid white;outline-offset:4px}progress{width:100%;height:5px;accent-color:#d8bc83;margin:20px 0 8px}#status{font-size:14px;line-height:1.7;min-height:24px;color:#c7d6d5}#fullscreen{position:fixed;right:12px;top:12px;padding:6px 12px;background:#122c35bb;color:#d6dfd9;border:1px solid #78929477;font-size:12px;z-index:3}#cover[hidden]{display:none}.error{color:#f0b5a4!important}
+</style>
+<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+
+</head>
+<body>
+<canvas id="canvas" tabindex="0" aria-label="山痕攀岩游戏"></canvas>
+<button id="fullscreen" type="button" hidden>全屏</button>
+<div id="cover"><main class="panel"><div class="eyebrow">MOUNTAIN MARK</div><h1>山痕</h1><button id="start" type="button">进入游戏</button><progress id="progress" max="100" value="0" hidden></progress><div id="status" role="status" aria-live="polite"></div></main></div>
+<script src="index.js"></script>
+<script>
+'use strict';
+const canvas=document.getElementById('canvas');
+const start=document.getElementById('start');
+const cover=document.getElementById('cover');
+const statusText=document.getElementById('status');
+const progress=document.getElementById('progress');
+const full=document.getElementById('fullscreen');
+const config={"args":[],"canvasResizePolicy":0,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":15355064,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const engine=new Engine(config);
+// Match the drawing buffer to the displayed canvas, including Windows scaling
+// and browser zoom. Keep the 16:10 layout without stretching a fixed-size frame.
+function resizeCanvas(){
+ const rect=canvas.getBoundingClientRect();
+ const ratio=window.devicePixelRatio||1;
+ const width=Math.max(1,Math.round(rect.width*ratio));
+ const height=Math.max(1,Math.round(rect.height*ratio));
+ if(canvas.width!==width)canvas.width=width;
+ if(canvas.height!==height)canvas.height=height;
+}
+let resizeFrame=0;
+function scheduleResize(){
+ if(resizeFrame)return;
+ resizeFrame=requestAnimationFrame(()=>{resizeFrame=0;resizeCanvas();});
+}
+new ResizeObserver(scheduleResize).observe(canvas);
+window.addEventListener('resize',scheduleResize);
+document.addEventListener('fullscreenchange',scheduleResize);
+// Moving between displays can change density without a CSS-size resize event.
+let pixelRatio=window.devicePixelRatio||1;
+setInterval(()=>{
+ const nextRatio=window.devicePixelRatio||1;
+ if(nextRatio!==pixelRatio){pixelRatio=nextRatio;scheduleResize();}
+},250);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleResize();});
+resizeCanvas();
+canvas.addEventListener('contextmenu',event=>event.preventDefault());
+full.addEventListener('click',()=>{const action=document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();action.catch(()=>{full.textContent='请使用浏览器全屏';});canvas.focus();});
+function failed(error){cover.hidden=false;start.hidden=false;start.disabled=false;start.textContent='重新加载';start.onclick=()=>location.reload();progress.hidden=true;statusText.classList.add('error');statusText.textContent='加载失败，请重试。';console.error(error);}
+// Classic scripts can load sibling files when opened directly. Supply only our
+// exported resources from that bundle; hosted pages keep their normal loader.
+async function prepareLocalResources(){
+ if(location.protocol!=='file:')return ()=>{};
+ // Godot checks for PWA updates even with PWA export disabled. A local file
+ // cannot have a service worker registration; avoid its rejected browser call.
+ if('serviceWorker' in navigator)navigator.serviceWorker.getRegistration=()=>Promise.resolve(undefined);
+ await new Promise((resolve,reject)=>{
+  const script=document.createElement('script');
+  script.src='index.offline.data.js';
+  script.onload=()=>{script.remove();resolve();};
+  script.onerror=()=>{script.remove();reject(new Error('Missing local game resource bundle'));};
+  document.head.appendChild(script);
+ });
+ const files=new Map(Object.entries(window.MountainMarkLocalFiles).map(([name,file])=>[new URL(name,location.href).href,file]));
+ delete window.MountainMarkLocalFiles;
+ function resource(url){try{return files.get(new URL(url,location.href).href);}catch{return undefined;}}
+ function blob(file){
+  if(!file.blob){
+   const parts=file.base64.map(part=>{
+    const binary=atob(part),bytes=new Uint8Array(binary.length);
+    for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+    return bytes;
+   });
+   file.blob=new Blob(parts,{type:file.type});
+   delete file.base64;
+  }
+  return file.blob;
+ }
+ const nativeFetch=window.fetch;
+ window.fetch=function(input,options){
+  const file=resource(input instanceof Request?input.url:input);
+  const method=(options?.method||(input instanceof Request?input.method:'GET')).toUpperCase();
+  if(file&&(method==='GET'||method==='HEAD'))return Promise.resolve(new Response(method==='HEAD'?null:blob(file),{headers:{'Content-Type':file.type,'Content-Length':String(file.size)}}));
+  return nativeFetch.call(this,input,options);
+ };
+ // Audio worklets load through the browser itself rather than window.fetch.
+ const nativeAddModule=Worklet.prototype.addModule;
+ Worklet.prototype.addModule=function(url,options){
+  const file=resource(url);
+  if(!file||file.type!=='text/javascript')return nativeAddModule.call(this,url,options);
+  // Local pages have an opaque origin: Chromium rejects blob:null worklets,
+  // while a self-contained data URL loads without relaxing browser security.
+  const localURL='data:text/javascript;base64,'+file.base64.join('');
+  return nativeAddModule.call(this,localURL,options);
+ };
+ return ()=>{
+  for(const [url,file] of files)if(file.type!=='text/javascript')files.delete(url);
+  window.fetch=nativeFetch;
+ };
+}
+start.addEventListener('click',async()=>{
+ start.disabled=true;progress.hidden=false;statusText.textContent='正在加载…';
+ try{
+  const missing=Engine.getMissingFeatures({threads:false});if(missing.length)throw new Error('浏览器缺少 '+missing.join('、')+'，请使用支持 WebGL 2 的电脑浏览器。');
+  const releaseLocalResources=await prepareLocalResources();
+  resizeCanvas();
+  await engine.startGame({canvas,canvasResizePolicy:0,onProgress:(loaded,total)=>{if(total>0){progress.value=loaded/total*100;statusText.textContent='正在加载 '+Math.round(progress.value)+'%';}},onExit:()=>{cover.hidden=false;start.disabled=false;start.textContent='重新进入';start.onclick=()=>location.reload();}});
+  releaseLocalResources();
+  cover.hidden=true;full.hidden=false;canvas.focus();
+ }catch(error){failed(error);}
+});
+</script>
+</body></html>
+

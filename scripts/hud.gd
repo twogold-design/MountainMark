@@ -153,7 +153,7 @@ func _draw_menu(w: float, h: float) -> void:
 	_text("选择支撑脚 · 观察岩面 · 把握出手时机", 64, 662, 15, MUTED)
 	_rule(64, h - 183, w - 128)
 	_text("戴上耳机，听见山的呼吸。", 64, h - 42, 14, MUTED)
-	_text("所有旅程与纪念都保存在本机", w - 315, h - 42, 14, MUTED)
+	_text("旅程保存在当前浏览器" if OS.has_feature("web") else "所有旅程与纪念都保存在本机", w - 315, h - 42, 14, MUTED)
 
 func _draw_journal(w: float, h: float) -> void:
 	draw_rect(Rect2(0, 0, w, h), Color(0.025, 0.065, 0.08, 0.91))
@@ -525,7 +525,7 @@ func _draw_summit(w: float, h: float) -> void:
 	_text("登顶日期  ·  " + Time.get_date_string_from_system(), 74, 670, 15, Color(PAPER, fade))
 	_text("沿途足迹  ·  绕行 %d 处  /  捷径 %d 处" % [safe_count, shortcut_count], 74, 701, 15, Color(MUTED, fade))
 	if not game.postcard_path.is_empty():
-		_text("纪念卡已保存至游戏目录 .runtime/postcards", 74, 732, 14, Color(MINT, fade))
+		_text("纪念卡已生成，点击右侧下载留念" if OS.has_feature("web") else "纪念卡已保存至游戏目录 .runtime/postcards", 74, 732, 14, Color(MINT, fade))
 	_text("愿你记得，自己走过的每一步。", 74, h - 99, 17, Color(PAPER, fade))
 func _draw_help(w: float, h: float) -> void:
 	draw_rect(Rect2(0, 0, w, h), Color(0.02, 0.05, 0.06, 0.94))
@@ -617,7 +617,7 @@ func refresh_buttons() -> void:
 			_button("登山日志", Rect2(620, h - 148, 110, 54), game.open_journal)
 			_button(["落日橙", "松林绿", "冰川蓝"][game.outfit_index] + " · 换装", Rect2(742, h - 148, 160, 54), game.cycle_outfit)
 			_button("声音 " + ("关" if game.muted else "开"), Rect2(914, h - 148, 100, 54), game.toggle_audio)
-			_button("离开", Rect2(1026, h - 148, 82, 54), game.quit_game)
+			_button("暂存" if OS.has_feature("web") else "离开", Rect2(1026, h - 148, 82, 54), game.quit_game)
 		"journal":
 			var per_page: int = maxi(1, int((h - 360) / 33))
 			var pages: int = maxi(1, ceili(float(_journal_rows(w - 196).size()) / per_page))
@@ -632,7 +632,7 @@ func refresh_buttons() -> void:
 		"summit":
 			if game.summit_time < 4.0:
 				return
-			_button("保存登顶纪念卡", Rect2(w - 306, h - 321, 234, 48), game.export_postcard, true)
-			_button("打开纪念卡目录", Rect2(w - 306, h - 258, 234, 48), game.open_postcards)
+			_button("生成登顶纪念卡" if OS.has_feature("web") else "保存登顶纪念卡", Rect2(w - 306, h - 321, 234, 48), game.export_postcard, true)
+			_button("下载纪念卡" if OS.has_feature("web") else "打开纪念卡目录", Rect2(w - 306, h - 258, 234, 48), game.open_postcards, false, OS.has_feature("web") and game.postcard_path.is_empty())
 			_button("再攀一次   ↗", Rect2(w - 306, h - 195, 234, 48), func(): game.start_climb(false))
 			_button("返回群山", Rect2(w - 306, h - 132, 234, 48), game.return_menu)

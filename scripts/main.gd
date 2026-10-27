@@ -87,7 +87,7 @@ var _grip_hand_history: int = -1
 var _slip_cooldown: float = 0.0
 
 func _ready() -> void:
-	Engine.max_fps = 90
+	Engine.max_fps = 60 if OS.has_feature("web") else 90
 	_save_path = _data_path("save.json")
 	_load_save()
 	world = WorldScript.new()
@@ -136,6 +136,8 @@ func _ready() -> void:
 	get_tree().auto_accept_quit = false
 
 func _data_path(filename: String) -> String:
+	if OS.has_feature("web"):
+		return "user://".path_join(filename)
 	var base: String = ProjectSettings.globalize_path("res://.runtime")
 	if OS.has_feature("standalone") and not OS.has_feature("editor"):
 		base = OS.get_executable_path().get_base_dir().path_join(".runtime")
@@ -885,6 +887,10 @@ func toggle_help() -> void:
 	hud.refresh_buttons()
 
 func quit_game() -> void:
+	if OS.has_feature("web"):
+		return_menu()
+		show_toast("旅程已暂存", "下次用同一浏览器打开即可继续。现在可以关闭此页面。", 6.0)
+		return
 	if mode == "quitting":
 		return
 	if mode == "playing" or mode == "paused" or mode == "fallen":
@@ -1104,6 +1110,10 @@ func export_postcard() -> void:
 		hud.refresh_buttons()
 
 func open_postcards() -> void:
+	if OS.has_feature("web"):
+		if not postcard_path.is_empty() and FileAccess.file_exists(postcard_path):
+			JavaScriptBridge.download_buffer(FileAccess.get_file_as_bytes(postcard_path), postcard_path.get_file(), "image/png")
+		return
 	var folder: String = _data_path("postcards")
 	DirAccess.make_dir_recursive_absolute(folder)
 	OS.shell_open(folder)

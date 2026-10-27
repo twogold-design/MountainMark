@@ -1,18 +1,8 @@
-# Godot imports and local editor state
-/.godot/
-
-# Local saves, credentials/cache locations and temporary runtime files
-**/.runtime/
-
-# Generated QA outputs (keep test scripts, reports and screenshots)
-/qa/*.log
-/qa/*-save.json
-/qa/*.pid
-
-# Local machine files
-.DS_Store
-Thumbs.db
+# Editor caches, local saves and temporary files are not release resources.
+.godot/
+.runtime/
+*.log
 *.tmp
 *.bak
-# Isolated QA save/postcard directories
-/qa/*-data/
+.DS_Store
+Thumbs.db

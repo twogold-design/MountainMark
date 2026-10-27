@@ -27,7 +27,7 @@ environment/defaults/default_clear_color=Color(0.09,0.17,0.2,1)
 driver/enable_input=false
 
 [debug]
-file_logging/enable_file_logging=true
+file_logging/enable_file_logging=false
 file_logging/log_path="res://.runtime/game.log"
 
 
